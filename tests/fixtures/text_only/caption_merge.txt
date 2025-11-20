@@ -1,0 +1,4 @@
+7/8/25, 14:23 - Alice: <Media omitted>
+7/8/25, 14:23 - Alice: This is a caption for the media
+7/8/25, 14:24 - Bob: <image omitted>
+7/8/25, 14:25 - Bob: This should NOT merge (different ts)

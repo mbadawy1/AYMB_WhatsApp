@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/your-org/whatsapp-transcriber/schema/metrics.schema.json",
+  "title": "RunMetrics",
+  "description": "Schema for aggregated pipeline run metrics including message counts, audio stats, and costs",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "messages_total",
+    "voice_total",
+    "voice_status",
+    "media_resolution",
+    "audio_seconds_total",
+    "asr_cost_total_usd",
+    "wall_clock_seconds"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Semantic version of this metrics schema",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "examples": ["1.0.0"]
+    },
+    "messages_total": {
+      "type": "integer",
+      "description": "Total number of messages processed",
+      "minimum": 0
+    },
+    "voice_total": {
+      "type": "integer",
+      "description": "Total number of voice messages",
+      "minimum": 0
+    },
+    "voice_status": {
+      "type": "object",
+      "description": "Count of voice messages by transcription status",
+      "required": ["ok", "partial", "failed"],
+      "properties": {
+        "ok": {
+          "type": "integer",
+          "description": "Voice messages transcribed successfully",
+          "minimum": 0
+        },
+        "partial": {
+          "type": "integer",
+          "description": "Voice messages with partial transcription",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "description": "Voice messages that failed transcription",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "media_resolution": {
+      "type": "object",
+      "description": "Count of media messages by resolution status",
+      "required": ["resolved", "unresolved", "ambiguous"],
+      "properties": {
+        "resolved": {
+          "type": "integer",
+          "description": "Media files successfully matched",
+          "minimum": 0
+        },
+        "unresolved": {
+          "type": "integer",
+          "description": "Media files with no matches found",
+          "minimum": 0
+        },
+        "ambiguous": {
+          "type": "integer",
+          "description": "Media files with multiple potential matches",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "audio_seconds_total": {
+      "type": "number",
+      "description": "Total duration of audio processed in seconds",
+      "minimum": 0,
+      "examples": [123.456]
+    },
+    "asr_cost_total_usd": {
+      "type": "number",
+      "description": "Total cost of ASR processing in USD",
+      "minimum": 0,
+      "examples": [0.123]
+    },
+    "wall_clock_seconds": {
+      "type": "number",
+      "description": "Total wall-clock time for the run in seconds",
+      "minimum": 0,
+      "examples": [45.678]
+    },
+    "asr_provider": {
+      "type": ["string", "null"],
+      "description": "ASR provider used (e.g., 'whisper_openai', 'google_stt')",
+      "examples": ["whisper_openai", "google_stt", "whisper_local", null]
+    },
+    "asr_model": {
+      "type": ["string", "null"],
+      "description": "ASR model used (e.g., 'whisper-1', 'chirp')",
+      "examples": ["whisper-1", "chirp", "whisper-large-v3", null]
+    },
+    "asr_language": {
+      "type": ["string", "null"],
+      "description": "Language hint or detected language code (ISO 639-1 or 'auto')",
+      "examples": ["en", "ar", "auto", null]
+    }
+  },
+  "additionalProperties": false
+}

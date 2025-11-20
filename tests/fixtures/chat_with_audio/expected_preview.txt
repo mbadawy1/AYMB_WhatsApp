@@ -1,0 +1,2 @@
+2025-01-01 00:00:01 | idx=2 | sender=Bob | status=ok | provider=- | text="Hey there"
+2025-01-01 00:00:04 | idx=6 | sender=Alice | status=failed/asr_failed | provider=- | text="[AUDIO TRANSCRIPTION FAILED]"

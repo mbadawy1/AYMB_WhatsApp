@@ -1,4 +1,4 @@
-# AGENTS.md — Orchestrator & Tasks (M1–M3 Focus)
+# AGENTS.md — Orchestrator & Tasks 
 
 > **Role:** Orchestrate tightly scoped, test-first tasks with deterministic outputs.  
 > **Workers:** Claude Code (orchestrator), secondary codegen tools (e.g., Codex/Gemini) for heavy lifting.  
@@ -187,12 +187,116 @@ in `src/schema/message.py` (and mirror it into `schema/message.schema.json` and 
 ---
 
 
+## Tooling & MCP Usage (Codex / Claude Code)
+
+> **Assumption:** MCP servers `context7`, `chrome-devtools`, `playwright`, and `git` are available in the environment (Codex VS Code extension or Claude Code with MCP config).
+> When these tools exist, prefer them over ad-hoc guessing or shelling out directly.
+
+### 1) Context7 — Deep Library Docs & Examples
+
+**Role**
+
+Use the `context7` MCP whenever you need **library / framework details** instead of guessing from memory, especially for:
+
+* ffmpeg flags, audio formats, VAD libraries (M3).
+* Whisper / Google ASR client options, rate limits, error surfaces (M3, M6).
+* Streamlit / frontend framework APIs used in `scripts/ui_app.py` (M6).
+
+**Rules**
+
+1. Before designing a non-trivial API or picking flags, call `context7` with the exact library + keyword (“ffmpeg silenceremove VAD thresholds”, “python soundfile 16k mono”, “Streamlit file uploader multiple files”).
+2. Prefer **small, targeted queries**; summarize docs into explicit decisions (e.g., “we will use `-ar 16000 -ac 1 -f wav` for WhatsApp audio”).
+3. Capture any critical assumptions in the relevant README (`README_M3.md`, `README_M6_UI.md`, etc.) so future tasks don’t need to re-query for the same thing.
+
+**Prompt pattern**
+
+> “Use the `context7` tool to fetch current docs for **`<library or CLI>`**, focused on **`<specific feature>`**.
+> Summarize the options relevant to this repo, choose one consistent configuration, and show me the exact code/CLI snippet you’ll implement.”
+
+---
+
+### 2) Chrome DevTools / Playwright — Seeing & Poking the UI
+
+**Role**
+
+For any task that touches the **UI / UX** (mostly M5+M6), use browser MCPs to inspect and exercise the **actual running app**, not just static code:
+
+* Layout and readability of `chat_with_audio.txt` / `chat_with_audio.md` previews as rendered in the Streamlit UI.
+* Buttons / flows in `scripts/ui_app.py` (selecting a run, launching the pipeline, viewing previews).
+
+**Chrome DevTools MCP**
+
+Use `chrome-devtools` when you need **DOM, CSS, console logs, or screenshots** of the local UI (typically `http://localhost:8501` for Streamlit):
+
+Prompt pattern:
+
+> “Assume the Streamlit app is running at **`http://localhost:8501`**.
+> Use the `chrome-devtools` MCP to:
+>
+> 1. open that URL,
+> 2. capture the DOM structure around the main transcript preview, and
+> 3. tell me what looks wrong on small screens.
+>    Then propose a concrete React/Streamlit layout or CSS change and the exact code diff to implement it.”
+
+**Playwright MCP**
+
+Use `playwright` when you need **end-to-end flows**:
+
+* Uploading a `_chat.txt`, running the pipeline, then verifying that the generated outputs (`messages.M*.jsonl`, `chat_with_audio.txt`, `chat_with_audio.md`) show up in the UI.
+* Checking that error states from `run_manifest.json`/`metrics.json` render correctly (failed run banners, partial ASR warnings).
+
+Prompt pattern:
+
+> “Use the `playwright` MCP to open **`http://localhost:8501`**,
+> click through the flow **‘select sample fixture → run pipeline → open transcript preview’**,
+> and report:
+> – which buttons/labels you had to click,
+> – any visible error messages,
+> – and a concise list of UI glitches or confusing states.
+> Then propose code changes to `scripts/ui_app.py` (and any supporting modules) to fix them.”
+
+---
+
+### 3) Git MCP — Branches, Diffs, History
+
+**Role**
+
+Use the `git` MCP for **read-only repo introspection** instead of shelling out with raw `git` commands:
+
+* Understanding current branch and its relation to `main`.
+* Summarizing changes for a given M1.x/M2.x/M3.x/M5.x/M6.x task.
+* Checking what changed in `AGENTS.md` or `CLAUDE.md` between two commits when contracts evolve.
+
+**Rules**
+
+1. Do **not** create commits or push from inside the agent; just read history and propose commands / PR descriptions.
+2. When summarizing work, prefer “git diff” via MCP over scanning files manually; tie your summary back to the milestone/task IDs (e.g., `M3.4`, `M5.1`).
+3. Use it to generate precise PR bodies that respect the “one task → one PR” rule.
+
+**Prompt pattern**
+
+> “Use the `git` MCP on this repo to:
+> – show the diff between `main` and the current branch,
+> – group changes by milestone task (M2.x/M3.x/M5.x/M6.x), and
+> – draft a PR description that follows our AGENTS.md guidelines
+> (scope ≤ 300 LOC / 5 files, mention fixtures & tests run).”
+
+
 ## CURRENT FOCUS
 
-- Milestone: M3 — Audio Pipeline
-- Task: M3.2 — ffmpeg OPUS→WAV conversion
-- Branch: feat/m3-2-ffmpeg-opus-to-wav
-- Status: In Progress
+- Milestone: M6.7 — Manifest & Metrics Schema (Run-Level)
+- Task: M6.7 — Manifest & Metrics Schema (Run-Level)
+- Branch: feat/m6-7-manifest-metrics-schema
+- Status: Complete
+
+**Completed (2025-01-20):**
+- ✅ Created JSON schemas (`schema/run_manifest.schema.json`, `schema/metrics.schema.json`)
+- ✅ Added validation helpers (`validate_manifest()`, `validate_metrics()`)
+- ✅ Created test suite (3 test files, 45+ test cases)
+- ✅ Created golden fixtures for contract verification
+
+**Previous:**
+- M6.6 — Audio Error Handling & Chunking Hardening (Complete)
 
 
 
@@ -1580,16 +1684,29 @@ VAD may flag “mostly silence” but **must not** skip ASR entirely; ASR still 
 **File:** `src/audio_transcriber.py`
 
 **Objective**
-Chunk WAV audio into fixed windows with overlap and produce a deterministic chunk manifest.
+Chunk normalized WAV audio into fixed windows with overlap, emit deterministic chunk WAVs, and produce a stable manifest that feeds ASR.
 
 **Deliverables**
 
 * `_chunk_wav(wav_path: Path, cfg) -> list[dict]` with:
 
-  * `chunk_index`, `start_sec`, `end_sec`
-  * `wav_chunk_path` or `offsets`
+  * `chunk_index` (0-based), `start_sec`, `end_sec`, `duration_sec`
+  * `wav_chunk_path` (16 kHz mono, deterministic filename) and/or sample `offsets`
+  * optional `num_samples` to aid sanity checks
 
-* Attach manifest to `derived["asr"]["chunks"]`.
+* Attach manifest to `derived["asr"]["chunks"]` before ASR runs.
+
+**Behavior**
+
+* Inputs are the 16 kHz mono WAV produced by `_to_wav`; do not change sample rate/channels here.
+* Defaults: `cfg.chunk_seconds = 120.0`, `cfg.chunk_overlap_seconds = 0.25` (clamp overlap to `< chunk_seconds`).
+* Chunk loop:
+  * start at `0.0`; `end = min(start + chunk_seconds, total_seconds)`
+  * advance `start = end - chunk_overlap_seconds`
+  * stop when `start >= total_seconds` (skip zero/negative durations)
+* Write chunks via Python slicing (`wave`/`soundfile`), not another `ffmpeg` call.
+* Place chunk files under a deterministic directory (e.g., `cfg.tmp_dir / "chunks"`) named `chunk_{i:04d}.wav` so reruns are identical.
+* Manifest ordering must be stable (sorted by `chunk_index`); round floats (e.g., 3dp) for determinism.
 
 **Verification & Tests**
 
@@ -1599,22 +1716,37 @@ Chunk WAV audio into fixed windows with overlap and produce a deterministic chun
 
 ---
 
+
 ## M3.5 — ASR Client Wrapper (Whisper/Provider Abstraction)
 
 **File:** `src/utils/asr.py`
 
 **Objective**
-Abstract ASR provider calls behind a clean interface with timeout/retry behavior per chunk.
+Abstract ASR provider calls behind a clean interface with timeout/retry behavior per chunk and deterministic error mapping.
 
 **Deliverables**
 
-* `AsrChunkResult` (dataclass or TypedDict).
+* `AsrChunkResult` (dataclass or TypedDict) including:
+  * `status` ∈ `{"ok","error"}` (enum or Literal)
+  * `text` (empty string on failure), `language` (optional)
+  * `duration_sec`, `start_sec`, `end_sec`
+  * `error` (str | None), `provider_meta` (dict for raw payloads)
 * `AsrClient` with:
 
   ```python
   def __init__(self, cfg): ...
   def transcribe_chunk(self, wav_path: Path, start_sec: float, end_sec: float) -> AsrChunkResult: ...
   ```
+
+**Behavior**
+
+* Support provider/model knobs in `cfg` (e.g., `cfg.asr_provider`, `cfg.asr_model`, `cfg.asr_language`).
+* Enforce per-chunk timeout (`cfg.asr_timeout_seconds`) and retry (`cfg.asr_max_retries`, default 1 retry after the first failure).
+* Normalize provider responses into `AsrChunkResult` with deterministic defaults:
+  * On success: `status="ok"`, `error=None`, `text` is stripped, `language` best-effort from provider.
+  * On failure: `status="error"`, `text=""`, `error` contains a concise message; raise only after retries exhausted so caller can map status (M3.8).
+* Do not mutate global state; pure call per chunk.
+* Include light logging hooks (debug-level) to aid tests but avoid noisy stdout/stderr by default.
 
 **Verification & Tests**
 
@@ -1625,31 +1757,30 @@ Abstract ASR provider calls behind a clean interface with timeout/retry behavior
 
 ---
 
+---
+
 ## M3.6 — Chunk Loop, Transcript Assembly & Derived Payload
 
 **File:** `src/audio_transcriber.py`
 
 **Objective**
-Wire chunking and ASR to produce final transcript, attach to `Message`, and populate `derived["asr"]`.
+Wire chunking and ASR to produce the final transcript, attach it to `Message`, and populate `derived["asr"]` with chunk-level results.
 
 **Behavior**
 
-* For `kind="voice"` messages (VAD is informational only; ASR is always run on supported audio):
-  * Loop over chunk manifest, call `AsrClient.transcribe_chunk`.
-
-  * Assemble final transcript: newline-join of chunk texts.
-
-  * Set:
-
-    * `m.content_text` to transcript (if previously empty) or append with separator.
-    * `m.status="ok"` if all chunks succeed.
-    * `m.partial=False` unless chunks fail (see M3.8).
-
-  * Extend `derived["asr"]` with:
-
-    * `provider`, `model`, `language`,
-    * `total_duration_seconds`,
-    * `chunks` array (index/start/end/text/duration/status).
+* Only process `kind="voice"` with a resolved `media_filename`; others return untouched.
+* Input: chunk manifest from `_chunk_wav`; call `AsrClient.transcribe_chunk` for each chunk in order.
+* Transcript assembly:
+  * Use the per-chunk `text` in order; join with `"\n"` (deterministic).
+  * If `m.content_text` was empty, set it to the joined transcript; otherwise append with a separator (e.g., `\n`).
+* Derived payload:
+  * Initialize `m.derived["asr"]` if missing.
+  * Store `provider`, `model`, `language` (best effort), `total_duration_seconds`, and `chunks`.
+  * Each chunk entry records `chunk_index`, `start_sec`, `end_sec`, `duration_sec`, `status`, `text`, `error` (if any), `language` (if any), and `wav_chunk_path`.
+* Status discipline (full mapping in M3.8):
+  * If all chunks return `status="ok"` → `m.status="ok"`, `m.partial=False`.
+  * Do not decide partial/failed here; defer to M3.8 for error mapping and `status_reason`.
+* Determinism: preserve manifest order; avoid nondeterministic logging; do not mutate `chunks` after assembly other than adding ASR results.
 
 **Verification & Tests**
 
@@ -1666,7 +1797,7 @@ Wire chunking and ASR to produce final transcript, attach to `Message`, and popu
 **File:** `src/audio_transcriber.py`, `src/utils/hashing.py`, `src/utils/cost.py`
 
 **Objective**
-Add content-addressed cache so repeated runs don’t recompute ASR, and store rich metadata for billing/metrics.
+Add content-addressed cache so repeated runs don’t recompute ffmpeg/VAD/ASR, and store rich metadata for billing/metrics.
 
 **Deliverables**
 
@@ -1681,6 +1812,21 @@ Add content-addressed cache so repeated runs don’t recompute ASR, and store ri
 
 * Cache file: `cfg.cache_dir / "audio" / f"{key}.json"`.
 
+**Behavior**
+
+* Cache key must change if audio content or core ASR/VAD/chunking knobs change; include schema/versioning fields if needed for forward-compat.
+* Cache payload should capture everything needed to hydrate the message without re-running work:
+  * final transcript, `status`, `status_reason`, `partial`
+  * `derived["asr"]` including chunks, vad, provider/model/language, cost estimates
+  * any human-readable placeholders used on failure
+* On cache hit:
+  * short-circuit ffmpeg/VAD/ASR/chunking; apply cached transcript/status/derived to `Message`
+  * keep deterministic ordering and default fields; do not mutate cached payload
+* On cache miss:
+  * run normal pipeline; before returning, write payload JSON atomically (tmp + rename) with UTF-8 and stable key order.
+* Cache directory is created if missing; avoid crashing if cache is unwritable—log and continue without cache.
+* Cost helpers (`utils/cost.py`) may be invoked to include estimated/actual cost fields in payload.
+
 **Verification & Tests**
 
 * `test_cache_write_and_read_roundtrip`.
@@ -1694,7 +1840,7 @@ Add content-addressed cache so repeated runs don’t recompute ASR, and store ri
 **File:** `src/audio_transcriber.py`
 
 **Objective**
-Map all failure/partial cases to clear `status`, `status_reason`, and `partial` semantics.
+Map all failure/partial cases to clear `status`, `status_reason`, and `partial` semantics, grounded in chunk outcomes and ffmpeg/VAD stages.
 
 **StatusReason codes used** (must match the global enum):
 
@@ -1706,10 +1852,22 @@ Map all failure/partial cases to clear `status`, `status_reason`, and `partial` 
 
 **Behavior**
 
-* If **all** chunks fail:
+* If ffmpeg conversion failed or timed out (no WAV):
+
+  * `m.status="failed"`, `m.status_reason="ffmpeg_failed"` or `"timeout_ffmpeg"`.
+  * `m.content_text = m.content_text or "[FFMPEG CONVERSION FAILED]"`.
+  * `m.partial=False`; skip ASR entirely.
+
+* If audio unsupported (pre-check):
+
+  * `m.status="failed"`, `m.status_reason="audio_unsupported_format"`.
+  * `m.content_text = m.content_text or "[UNSUPPORTED AUDIO FORMAT]"`.
+  * `m.partial=False`; skip ASR.
+
+* If **all** chunks fail in ASR:
 
   * `m.status="failed"`, `m.status_reason="asr_failed"` or `"timeout_asr"`.
-  * `m.content_text="[AUDIO TRANSCRIPTION FAILED]"` (if empty).
+  * `m.content_text = m.content_text or "[AUDIO TRANSCRIPTION FAILED]"`.
   * `m.partial=False`.
 
 * If **some** chunks succeed, some fail:
@@ -1717,9 +1875,18 @@ Map all failure/partial cases to clear `status`, `status_reason`, and `partial` 
   * Build transcript from successful chunks only.
   * `m.status="partial"`, `m.status_reason="asr_partial"`, `m.partial=True`.
 
+* If all chunks succeed:
+
+  * `m.status="ok"`, `m.status_reason=None`, `m.partial=False`.
+
+* VAD observation:
+
+  * Never sets `status`/`status_reason`; may set `derived["asr"]["vad"]["is_mostly_silence"]`.
+
 * Always populate:
 
-  * `derived["asr"]["error_summary"]` with counts and last error message.
+  * `derived["asr"]["error_summary"]` with counts (ok/error), last error message, timeout flags.
+  * Per-chunk `status`/`error` already recorded in `derived["asr"]["chunks"]`.
 
 **Verification & Tests**
 
@@ -1739,6 +1906,15 @@ Estimate cost per audio message based on provider/model and seconds transcribed;
 
 * `estimate_asr_cost(seconds: float, provider: str, model: str, billing: str) -> float`.
 * `COST_TABLE` mapping `(provider, model, billing)` to `$ / minute` or similar.
+* Optional helper to bundle totals per run (`accumulate_costs(messages: list[Message]) -> dict`).
+
+**Behavior**
+
+* Rates are deterministic constants checked in code/tests (no network lookups).
+* Billing unit should handle per-minute rounding rules per provider (e.g., ceiling to nearest 30s/min).
+* Cost must be written into `m.derived["asr"]["cost"]` (per message) and mirrored into cache payload.
+* No side effects beyond returning numeric cost; caller owns formatting/currency symbols.
+* Changing provider/model or billing plan must change cache key (see M3.7 rules).
 
 **Verification & Tests**
 
@@ -2496,12 +2672,43 @@ Provide a richer, structured **Markdown** view of the conversation suitable for 
 > * A reusable **transcript preview** formatter (`preview_transcripts.txt`) for UI and tooling.
 > * A **Markdown renderer skeleton** (`chat_with_audio.md`) that defines the structure needed for future MD→PDF work.
 
+
 # M6 Upstream Contracts (Prerequisites for Orchestrator/UI)
 
-**Purpose**  
+**Purpose**
 Before implementing M6 (pipeline runner, UI, concurrency), upstream steps (M1–M3 + M5.1) must satisfy a minimal set of contracts. These contracts are stricter than “tests are green” and are what the M6 runner and UI rely on.
 
 M6 assumes:
+
+### M6C — Contract Hardening Tasks (pre-M6)
+
+> Hardening items to complete before building the M6 runner/UI.
+
+**M6C.1 — Standardized Outputs per Run**
+
+* Emit `messages.M1.jsonl`, `messages.M2.jsonl`, `messages.M3.jsonl`, `chat_with_audio.txt`, optional `preview_transcripts.txt`, `run_manifest.json`, `metrics.json` into `run_dir`.
+* Missing `preview_transcripts.txt` is treated as “no preview yet” (empty), not an error.
+* Provide deterministic helper/emitter functions to write these files.
+
+**M6C.2 — Schema & Enum Invariants**
+
+* Validate JSONL writers serialize `Message` exactly (contiguous idx, stable ISO ts, enums constrained to schema).
+* Add a pre-flight schema check step for runner/UI; fail fast on drift.
+
+**M6C.3 — Stage Contract Audit**
+
+* M1: caption tails are `status="skipped", status_reason="merged_into_previous_media"`.
+* M2: filename fast path sets `media_filename` when file exists; unresolved/ambiguous map to proper `status_reason`.
+* M3: status/status_reason per global enum; bad audio must not crash the run.
+
+**M6C.4 — Manifest & Metrics Stubs**
+
+* Define `run_manifest.json` shape (e.g., in `src/pipeline/manifest.py`) capturing inputs/outputs/counts/timestamps.
+* Define `metrics.json` summary (counts, cost, durations); add a minimal writer invoked after pipeline steps.
+
+**M6C.5 — Contract Runner/CLI**
+
+* Add a thin runner/CLI to orchestrate M1→M3→M5.1/M5.2 and write all contract files to `run_dir` deterministically (UTF-8, LF).
 
 ---
 
@@ -2655,6 +2862,7 @@ With these contracts respected, M6 can assume that:
 * Failures are visible and debug-friendly.
 * The UI can safely render run status and transcript previews without knowing the internal details of M1–M3.
 
+---
 
 # M6 — Orchestrator, Concurrency, Resume, Metrics & UI
 
@@ -2667,52 +2875,70 @@ Provide a **single, resumable pipeline** and a **small local UI** to run M1–M3
 * **Exceptions handled gracefully** (bad files/messages never crash the pipeline).
 * A **double-clickable launcher** on Windows that opens a Streamlit UI in the browser.
 
-M6 does **not** depend on M4 (image/PDF enrichment). If M4 is added later, it will slot into the same orchestration structure as an additional pipeline step.
+M6 does **not** depend on M4 (image/PDF enrichment). If M4 is added later, it should plug into the same orchestration structure as an additional pipeline step.
 
 ---
 
 ## Code Surface (expected files)
 
-New / primary modules:
+Core pipeline:
 
-* `src/pipeline/config.py`      — `PipelineConfig`, helpers for paths & defaults.
-* `src/pipeline/manifest.py`    — `RunManifest` structure, read/write helpers.
-* `src/pipeline/runner.py`      — `run_pipeline(cfg)`, orchestration + concurrency + metrics.
-* `src/pipeline/status.py`      — small helpers for status/metrics aggregation (re-used by tests/UI).
-* `config/asr.yaml`             — ASR provider/model defaults & per-provider settings.
-
-ASR abstraction (extends existing M3 code):
-
-* `src/utils/asr.py`            — `AsrClient` + provider backends (Whisper, Google).
-* `src/audio_transcriber.py`    — updated to consume `AsrClient` via `AudioConfig.asr_provider`.
-
-CLIs:
-
+* `src/pipeline/config.py`      — `PipelineConfig`, CLI helpers, path resolution.
+* `src/pipeline/manifest.py`    — `RunManifest` structure, read/write, helpers.
+* `src/pipeline/metrics.py`     — `RunMetrics` aggregation helpers.
+* `src/pipeline/status.py`      — high-level status helpers for UI (list runs, load summaries).
+* `src/pipeline/runner.py`      — `run_pipeline(cfg)`, orchestration + concurrency + metrics wiring.
+* `src/utils/asr.py`            — provider-agnostic ASR client + provider backends (M6.2, M6.5).
+* `src/audio_transcriber.py`    — glue between M3 and ASR abstraction.
 * `scripts/run_pipeline.py`     — one-shot pipeline runner (no UI).
 * `scripts/ui_app.py`           — Streamlit UI app (localhost web UI).
 * `scripts/WhatsAppTranscriberUI.bat` — Windows launcher (double-click → UI + logs).
 
-Docs:
+Config & docs:
 
+* `config/asr.yaml`             — ASR provider/model defaults & per-provider settings.
 * `README_M6_PIPELINE.md`       — pipeline runner usage, concurrency/resume semantics.
 * `README_M6_UI.md`             — UI usage, launcher instructions, provider notes.
+* `README_M5_RENDERING.md`      — rendering/RTL notes (see M6.8).
 
-Tests & fixtures:
+Tests & fixtures (module-level):
 
-* `tests/test_pipeline_config.py`
-* `tests/test_pipeline_manifest.py`
-* `tests/test_pipeline_runner_sequential.py`
-* `tests/test_pipeline_runner_concurrent.py`
-* `tests/test_pipeline_resume.py`
-* `tests/test_pipeline_metrics.py`
-* `tests/test_run_pipeline_cli_smoke.py`
-* `tests/test_asr_client_whisper.py`
-* `tests/test_asr_client_google.py`
-* `tests/test_derived_asr_provider_model.py`
-* `tests/test_status_helpers.py`
-* `tests/fixtures/pipeline_small_chat/` (tiny end-to-end chat fixture)
+* Pipeline core:
 
-> M6 changes **must not** break the contracts/tests for M1–M3 or M5.1 (renderer). All new behavior lives behind new functions/CLIs and config flags.
+  * `tests/test_pipeline_config.py`
+  * `tests/test_pipeline_manifest.py`
+  * `tests/test_pipeline_runner_sequential.py`
+  * `tests/test_pipeline_runner_concurrent.py`
+  * `tests/test_pipeline_resume.py`
+  * `tests/test_pipeline_metrics.py`
+  * `tests/test_run_pipeline_cli_smoke.py`
+* ASR & audio:
+
+  * `tests/test_asr_client_whisper.py`
+  * `tests/test_asr_client_google.py`
+  * `tests/test_asr_provider_error_mapping.py`
+  * `tests/test_asr_error_mapping_realistic.py`
+  * `tests/test_audio_chunking_hardening.py`
+  * `tests/test_derived_asr_provider_model.py`
+* Manifest & metrics schema:
+
+  * `tests/test_manifest_schema_basic.py`
+  * `tests/test_metrics_schema_basic.py`
+  * `tests/test_manifest_and_metrics_golden.py`
+* UI & status:
+
+  * `tests/test_status_helpers.py`
+  * `tests/test_ui_app_imports_and_layout.py`
+* Rendering (RTL/Arabic):
+
+  * `tests/test_text_renderer_arabic_content.py`
+  * `tests/test_markdown_renderer_arabic_content.py`
+  * (optional) `tests/test_renderers_utf8_and_newlines.py`
+* Fixtures:
+
+  * `tests/fixtures/pipeline_small_chat/` (tiny end-to-end chat fixture)
+
+> M6 changes **must not** break the contracts/tests for M1–M3 or M5.1. Any new behavior lives behind new functions/CLIs and config flags.
 
 ---
 
@@ -2722,338 +2948,129 @@ Tests & fixtures:
 Create a single **pipeline runner** that:
 
 1. Runs M1→M2→M3→M5.1 in a deterministic sequence.
-2. Uses **concurrency** for per-voice ASR work.
-3. Supports **resume** by reusing intermediate JSONL files and caches.
-4. Maintains a **`run_manifest.json`** file for live status and run metadata.
-5. Aggregates **per-run metrics** (counts, durations, costs) in a machine-readable form.
+2. Exposes knobs for concurrency (`max_workers_audio`), ASR provider/model, sampling, etc.
+3. Writes and updates `run_manifest.json` and `metrics.json` as a first-class contract.
+4. Supports **resume** by reusing intermediate outputs and ASR caches.
 
 **Files**
 
 * `src/pipeline/config.py`
 * `src/pipeline/manifest.py`
+* `src/pipeline/metrics.py`
 * `src/pipeline/runner.py`
-* `src/pipeline/status.py`
 * `scripts/run_pipeline.py`
-* `tests/test_pipeline_config.py`
-* `tests/test_pipeline_manifest.py`
-* `tests/test_pipeline_runner_sequential.py`
-* `tests/test_pipeline_runner_concurrent.py`
-* `tests/test_pipeline_resume.py`
-* `tests/test_pipeline_metrics.py`
-* `tests/test_run_pipeline_cli_smoke.py`
-* `tests/fixtures/pipeline_small_chat/` (chat, media, voice fixtures)
+* Tests:
 
----
+  * `tests/test_pipeline_config.py`
+  * `tests/test_pipeline_manifest.py`
+  * `tests/test_pipeline_runner_sequential.py`
+  * `tests/test_pipeline_runner_concurrent.py`
+  * `tests/test_pipeline_resume.py`
+  * `tests/test_pipeline_metrics.py`
+  * `tests/test_run_pipeline_cli_smoke.py`
+  * Fixture: `tests/fixtures/pipeline_small_chat/`
 
 ### Deliverables
 
-1. **Run directory layout**
+1. **`PipelineConfig` dataclass & CLI**
 
-   For each pipeline invocation, create a new `run_dir`, e.g.:
+   * Holds:
 
-   ```text
-   runs/
-     2025-11-17T2110__my_chat/
-       messages.M1.jsonl
-       messages.M2.jsonl
-       messages.M3.jsonl
-       chat_with_audio.txt
-       run_manifest.json
-       preview_transcripts.txt      # optional, see below
-       metrics.json
-       logs/
-         m1_parse.log
-         m2_media.log
-         m3_audio.log
-         m5_render.log
-   ```
+     * `root`, `run_id`, `run_dir`
+     * `chat_file`
+     * `max_workers_audio`
+     * `asr_provider`, `asr_model`, `asr_language`
+     * `sample_limit` / `sample_every` (optional)
+     * `force_rerun` or `resume` flag
+   * `scripts/run_pipeline.py` parses CLI args and instantiates `PipelineConfig`.
 
-2. **`PipelineConfig`**
+2. **`RunManifest` orchestration structure**
 
-   `src/pipeline/config.py`:
+   * `RunManifest` contains:
 
-   ```python
-   from dataclasses import dataclass
-   from pathlib import Path
-   from typing import Optional, Literal
+     * `schema_version`
+     * `run_id`, `root`, `chat_file`
+     * `start_time`, `end_time`
+     * `steps: dict[StepName, StepProgress]` with:
 
-   AsrProvider = Literal["whisper_openai", "whisper_local", "google_stt"]
+       * `status ∈ {"pending","running","ok","failed","skipped"}`
+       * `total`, `done`
+     * `summary` with at least `messages_total`, `voice_total`, `error`.
+   * Helper functions:
 
-   @dataclass
-   class PipelineConfig:
-       root: Path                # WhatsApp export folder
-       chat_file: Path           # concrete _chat.txt file
-       run_dir: Path             # runs/<run_id>/
-       asr_provider: AsrProvider = "whisper_openai"
-       asr_model: Optional[str] = None  # provider-specific default if None
-       sample_voices: Optional[int] = None  # limit # of voice messages for test runs
-       max_workers_audio: int = 4        # concurrency for ASR
-       overwrite_existing: bool = False  # if False, reuse existing step outputs
-   ```
+     * `init_manifest(cfg)` — create and write initial manifest with all steps `pending`.
+     * `update_step(manifest, step_name, **fields)` — update status/progress and re-write.
 
-   Helpers for:
+3. **Runner orchestration & resume**
 
-   * **Run id creation** (`create_run_id(chat_file) -> str`).
-   * **Path helpers** (`get_messages_path(cfg, stage)`, `get_manifest_path(cfg)`, etc.).
+   * `run_pipeline(cfg)`:
 
-3. **`RunManifest` & helpers**
+     1. Validates upstream contracts (presence of required files for prior runs).
+     2. Creates or loads `run_manifest.json`.
+     3. Steps:
 
-   `src/pipeline/manifest.py`:
+        * `M1_parse` — call existing M1 script/module, write `messages.M1.jsonl`.
+        * `M2_media` — call M2 resolver, write `messages.M2.jsonl` + `exceptions.csv`.
+        * `M3_audio` — call `AudioTranscriber` on voice messages from M2 (respect concurrency).
+        * `M5_text` — call text renderer, write `chat_with_audio.txt` and optional `preview_transcripts.txt`.
+     4. For each step:
 
-   ```python
-   from dataclasses import dataclass, field
-   from typing import Dict, Literal, Optional
-   from pathlib import Path
+        * Skips step if `status=="ok"` and outputs exist **and** resume is enabled.
+        * Otherwise runs step, updates manifest + metrics.
 
-   StepName = Literal["M1_parse", "M2_media", "M3_audio", "M5_render"]
-   StepStatus = Literal["pending", "running", "ok", "failed"]
+   * Resume semantics:
 
-   @dataclass
-   class StepProgress:
-       status: StepStatus = "pending"
-       total: int = 0
-       done: int = 0
-       errors: int = 0
+     * For M3, `AudioTranscriber` must skip messages whose `derived["asr"]` already matches current pipeline version/provider/model.
 
-   @dataclass
-   class RunManifest:
-       run_id: str
-       root: str
-       chat_file: str
-       start_time: str
-       end_time: Optional[str] = None
-       current_step: Optional[StepName] = None
-       steps: Dict[StepName, StepProgress] = field(default_factory=dict)
-       summary: dict = field(default_factory=dict)
-   ```
+4. **Metrics aggregation**
 
-   Functions:
+   * `RunMetrics` collects:
 
-   * `init_manifest(cfg: PipelineConfig) -> RunManifest`
-   * `load_manifest(path: Path) -> RunManifest`
-   * `save_manifest(manifest: RunManifest, path: Path) -> None`
-   * `update_step(manifest, step, **kwargs)` (e.g. `status`, `total`, `done`).
-
-   Behavior:
-
-   * Manifest is **overwritten atomically** on each update (write to temp file then rename).
-   * `current_step` always points to the currently active step or `None` when done.
-
-4. **Pipeline runner**
-
-   `src/pipeline/runner.py` exposes:
-
-   ```python
-   def run_pipeline(cfg: PipelineConfig) -> None:
-       ...
-   ```
-
-   Responsibilities:
-
-   * Ensure `run_dir` exists; create `logs/`.
-
-   * Initialize `RunManifest` and write to `run_manifest.json`.
-
-   * Execute steps **in order**:
-
-     1. **M1_parse**
-
-        * If `messages.M1.jsonl` exists and `overwrite_existing=False` and manifest says `ok`, **reuse**.
-        * Otherwise invoke M1 logic (reuse `parse_chat.py` internals), write M1 JSONL, update manifest with `total`/`done` (# messages).
-        * Log to `logs/m1_parse.log` and stdout.
-
-     2. **M2_media**
-
-        * Same pattern with `messages.M2.jsonl`.
-        * Reuse M1 output as input; run resolver; write M2 JSONL and `exceptions.csv`, update step totals.
-
-     3. **M3_audio**
-
-        * Determine list of `kind="voice"` messages from M2 output.
-        * Process them with **concurrency** (see below) using `AudioTranscriber` + `AsrClient`.
-        * Incrementally update `done` and metrics after each voice note.
-        * Write full `messages.M3.jsonl` on success; handle resume (if some messages already have `derived["asr"]` with current pipeline version, skip them).
-
-     4. **M5_render**
-
-        * Invoke text renderer (M5.1) on `messages.M3.jsonl`, producing `chat_with_audio.txt`.
-        * Update `M5_render` step in manifest.
-
-   * On any **fatal error** inside a step:
-
-     * Mark that step `status="failed"`, set `current_step=None`, record error summary in `manifest.summary["error"]`.
-     * Re-raise or exit non-zero from CLI.
-
-5. **Concurrency for M3 (audio)**
-
-   In `run_pipeline`:
-
-   * Use `ThreadPoolExecutor` or `ProcessPoolExecutor` (configurable) for voice messages:
-
-     ```python
-     with ThreadPoolExecutor(max_workers=cfg.max_workers_audio) as ex:
-         for m in voice_messages:
-             ex.submit(process_one_voice, m, ...)
-     ```
-
-   * `process_one_voice`:
-
-     * Calls `AudioTranscriber.transcribe(m)` (which uses `AsrClient`).
-     * Writes progress in a **thread-safe** way:
-
-       * Increase `done` count for `M3_audio` in manifest.
-       * Append preview line to `preview_transcripts.txt` when new transcript becomes available.
-
-   * Determinism:
-
-     * Although processing order is concurrent, final `messages.M3.jsonl` must be written in **sorted order by `idx`**.
-     * Manifest only tracks counts; no ordering assumptions.
-
-6. **Resume behavior**
-
-   * Step-level resume:
-
-     * If `messages.M1.jsonl`/`M2`/`M3` exist and corresponding manifest step is `ok`, and `overwrite_existing=False`, skip recomputing that step.
-
-   * Within M3:
-
-     * When re-running, inspect `messages.M2.jsonl` and existing `messages.M3.jsonl` (if present).
-     * For any voice message there that already has `derived["asr"]["pipeline_version"] == CURRENT_VERSION` and `status` not in `{"failed"}`, skip re-transcribing.
-     * Concurrency pool only schedules **missing** or outdated messages.
-
-7. **Metrics aggregation**
-
-   * At the end of `run_pipeline`, compute a `metrics.json` in `run_dir`, e.g.:
-
-     ```json
-     {
-       "messages_total": 523,
-       "voice_total": 72,
-       "voice_ok": 60,
-       "voice_partial": 8,
-       "voice_failed": 4,
-       "voice_skipped_vad": 0,
-       "media_resolved": 380,
-       "media_unresolved": 30,
-       "media_ambiguous": 20,
-       "asr_provider": "whisper_openai",
-       "asr_model": "whisper-1",
-       "audio_seconds_total": 1832.5,
-       "asr_cost_total_usd": 3.72,
-       "wall_clock_seconds": 217.3
-     }
-     ```
-
-   * Expose metrics to `RunManifest.summary["metrics"]` for UI consumption.
-
-8. **CLI wrapper**
-
-   `scripts/run_pipeline.py`:
-
-   * Arguments:
-
-     ```text
-     --root        (export folder, required)
-     --chat-file   (path to specific chat .txt; optional if root has only one)
-     --asr-provider (whisper_openai|whisper_local|google_stt)
-     --asr-model   (optional; provider default if omitted)
-     --sample-voices N   (optional; pass to cfg.sample_voices)
-     --max-workers-audio N
-     --run-dir     (optional override for runs/<run_id>/)
-     --overwrite-existing
-     ```
-
-   * Prints:
-
-     * Step transitions:
-
-       ```text
-       [M1] Parsed 523 messages from _chat.txt
-       [M2] Media resolved: resolved=380, unresolved=30, ambiguous=20
-       [M3] Transcribing 72 voice notes with whisper_openai (4 workers)...
-       [M5] Rendered 523 messages → chat_with_audio.txt
-       ```
-
-     * Final summary based on metrics.
-
----
+     * message/voice counts
+     * per-status counts for voice (`ok/partial/failed`)
+     * media resolved/unresolved/ambiguous
+     * `audio_seconds_total`
+     * `asr_cost_total_usd`
+     * `wall_clock_seconds`
+   * `run_pipeline` updates metrics incrementally and writes `metrics.json` at end.
 
 ### Subtasks
 
-1. Implement `PipelineConfig` & helpers (paths, run_id).
-2. Implement `RunManifest` structure + read/write helpers.
-3. Implement `run_pipeline` sequential flow (no concurrency), reusing M1/M2/M3/M5 internals.
-4. Add concurrency around M3 (audio) with deterministic final output.
-5. Implement basic resume semantics (step-level + audio-level).
-6. Implement metrics aggregation & `metrics.json`.
-7. Implement `scripts/run_pipeline.py` CLI with argparse, wiring to `run_pipeline`.
-8. Add logging to both **stdout** and `logs/*.log`.
-9. Wire `preview_transcripts.txt` writing for newly completed voice messages.
-10. Document behavior in `README_M6_PIPELINE.md`.
-
----
+1. Implement `PipelineConfig` + CLI parsing.
+2. Implement `RunManifest` and helpers, including JSON (de)serialization.
+3. Implement `RunMetrics` and helpers.
+4. Implement `run_pipeline(cfg)` orchestration for sequential M1→M2→M3→M5.1.
+5. Implement concurrency in M3 (thread/process pool) controlled by `max_workers_audio`.
+6. Implement resume logic (skip completed steps, skip already-ASR’d messages).
+7. Wire metrics + manifest updates.
 
 ### Verification & Tests
 
-Fixtures:
-
-* `tests/fixtures/pipeline_small_chat/`:
-
-  * Small `_chat.txt` with:
-
-    * A few text messages.
-    * Some media placeholders.
-    * 3–5 voice notes.
-  * Minimal media tree with 1–2 resolvable voice files.
-
-Tests:
-
 * `test_pipeline_config_root_paths`
-  `PipelineConfig` derives `run_dir`, messages paths, manifest path correctly.
-
+  Config resolves `root`, `run_dir`, and `chat_file` correctly (no trailing slashes, deterministic run IDs).
 * `test_pipeline_manifest_initial_structure`
-  `init_manifest` populates `steps` with all step names as `pending`, `total=0`, `done=0`.
-
+  `init_manifest` populates all steps as `pending` with `total=0`, `done=0`.
 * `test_pipeline_runner_sequential_happy_path`
-  Force `max_workers_audio=1`, run pipeline on small fixture, assert:
-
-  * All step statuses become `ok`.
-  * `messages.M1/M2/M3.jsonl`, `chat_with_audio.txt`, `metrics.json` exist.
-
+  With `max_workers_audio=1`, small fixture run produces all expected outputs and step statuses are `ok`.
 * `test_pipeline_runner_concurrent_matches_sequential`
-  Run pipeline twice:
-
-  * Once with `max_workers_audio=1`.
-  * Once with `max_workers_audio=4`.
-
-  Compare resulting `messages.M3.jsonl` and `chat_with_audio.txt` byte-for-byte.
-
+  Running with `max_workers_audio=1` vs `4` yields byte-for-byte identical `messages.M3.jsonl` and `chat_with_audio.txt`.
 * `test_pipeline_resume_skips_completed_steps`
-
-  * First run: full pipeline.
-  * Second run: modify manifest to mark M1/M2 as `ok`, M3 as `pending`, delete `messages.M3.jsonl` only.
-  * Assert second run reuses M1/M2 and only recomputes M3/M5.
-
+  Re-running with same config skips steps already marked `ok` and reuses `messages.M3.jsonl`.
 * `test_pipeline_metrics_populated`
-  Ensure `metrics.json` has required keys and non-trivial values.
-
+  After a successful run, `metrics.json` has non-zero counts consistent with fixture.
 * `test_run_pipeline_cli_smoke`
+  CLI wrapper runs end-to-end on fixture without crashing.
 
-  * Invoke `scripts/run_pipeline.py` via `subprocess`.
-  * Exit code 0, manifests & outputs present, logs non-empty.
+### Acceptance (M6.1)
 
-**Acceptance (M6.1)**
-
-* Running:
+* Single CLI command:
 
   ```bash
   python scripts/run_pipeline.py --root tests/fixtures/pipeline_small_chat
   ```
 
   produces a run directory with valid manifest, metrics, and deterministic M3/M5 outputs.
-
 * Increasing `max_workers_audio` from 1 to N only affects **performance**, not outputs.
-
 * Killing the process mid-M3 and re-running with same config reuses already-transcribed messages and completes successfully.
 
 ---
@@ -3066,430 +3083,800 @@ Introduce a **provider-agnostic ASR client** so that M3 (audio pipeline) and M6 
 * Whisper (OpenAI API or local),
 * Google Speech-to-Text (cloud),
 
-without changing pipeline or UI code. Ensure provider/model info and cost are reflected in `derived["asr"]`, `metrics.json`, and `RunManifest`.
+without changing pipeline or UI code. Ensure provider/model info is reflected in `derived["asr"]`, `metrics.json`, and `RunManifest`.
 
 **Files**
 
-* `src/utils/asr.py`         (significant update)
-* `src/audio_transcriber.py` (small integration changes)
-* `config/asr.yaml`
+* `src/utils/asr.py`
+* `src/audio_transcriber.py`
 * `src/pipeline/config.py`   (add `asr_provider`, `asr_model` defaults)
-* `src/pipeline/runner.py`   (plumb provider/model into `AudioConfig`)
-* `tests/test_asr_client_whisper.py`
-* `tests/test_asr_client_google.py`
-* `tests/test_derived_asr_provider_model.py`
+* `src/pipeline/metrics.py`
+* `config/asr.yaml`
+* Tests:
 
----
+  * `tests/test_asr_client_whisper.py`
+  * `tests/test_asr_client_google.py`
+  * `tests/test_derived_asr_provider_model.py`
+  * `tests/test_pipeline_metrics.py`
 
 ### Deliverables
 
-1. **Config file for providers**
+1. **Provider-agnostic `AsrClient`**
 
-   `config/asr.yaml`:
-
-   ```yaml
-   default_provider: whisper_openai
-   providers:
-     whisper_openai:
-       model: whisper-1
-       timeout_seconds: 30
-       max_retries: 2
-       billing: "openai_whisper_v1"
-     google_stt:
-       model: "default-google-model"
-       timeout_seconds: 30
-       max_retries: 2
-       billing: "google_stt_standard"
-   ```
-
-2. **ASR abstractions**
-
-   In `src/utils/asr.py`:
-
-   * `AsrChunkResult` dataclass / TypedDict:
-
-     ```python
-     @dataclass
-     class AsrChunkResult:
-         text: str
-         start_sec: float
-         end_sec: float
-         language: Optional[str]
-         confidence: Optional[float]
-         provider: str
-         model: str
-         raw: dict  # small, provider-specific snippet (no full responses)
-     ```
-
-   * Provider backend protocol:
-
-     ```python
-     class AsrBackend:
-         def transcribe_chunk(self, wav_path: Path, start_sec: float, end_sec: float) -> AsrChunkResult:
-             ...
-     ```
-
-   * `WhisperBackend(AsrBackend)`:
-
-     * Uses OpenAI Whisper API or local Whisper executable depending on config.
-     * Handles timeout/retries.
-     * Normalizes responses into `AsrChunkResult`.
-
-   * `GoogleSttBackend(AsrBackend)`:
-
-     * Uses Google Speech-to-Text client.
-     * Also handles timeout/retries.
-     * Normalizes responses into `AsrChunkResult`.
-
-   * `AsrClient`:
+   * Interface:
 
      ```python
      class AsrClient:
-         def __init__(self, provider: str, model: Optional[str], timeout: float, max_retries: int, billing_key: str):
+         def __init__(self, provider_name: str, model: str | None, language: str | Literal["auto"]):
              ...
-         def transcribe_chunk(self, wav_path: Path, start_sec: float, end_sec: float) -> AsrChunkResult:
+
+         def transcribe_chunk(self, wav_path: str, start_sec: float, end_sec: float) -> AsrChunkResult:
              ...
      ```
 
-     * Dispatches to appropriate backend based on `provider`.
+   * Uses provider implementations (whisper, google, etc.) but exposes a single normalized `AsrChunkResult`.
 
-3. **Integration with `AudioTranscriber`**
+2. **Provider interface & concrete backends**
 
-   * Extend `AudioConfig` (M3) to include:
+   * Abstract interface:
 
      ```python
-     asr_provider: str
-     asr_model: str
-     asr_timeout_seconds: float
-     asr_max_retries: int
-     asr_billing_key: str
+     class AsrProvider(Protocol):
+         def transcribe_chunk(..., language_hint: str | Literal["auto"]) -> AsrChunkResult: ...
      ```
 
-   * In `AudioTranscriber.__init__`, create a single `AsrClient` using these settings.
+   * Backends:
 
-   * In the chunk loop, call `asr_client.transcribe_chunk(...)` and attach:
+     * `WhisperBackend` (OpenAI, local stub)
+     * `GoogleSttBackend`
+     * `NoopBackend` (for tests/dry runs)
 
-     ```python
-     derived["asr"]["provider"] = asr_result.provider
-     derived["asr"]["model"] = asr_result.model
-     ```
+3. **Config wiring**
 
-4. **Cost estimation integration**
+   * `config/asr.yaml` defines default provider/model per environment.
+   * `PipelineConfig` exposes `asr_provider`, `asr_model`.
+   * `run_pipeline` passes provider/model into `AudioTranscriber` → `AsrClient`.
 
-   * `src/utils/cost.py` already provides `estimate_asr_cost(seconds, provider, model, billing)` from M3.9.
-   * Ensure `AsrClient` passes the correct `billing_key` for each provider/model so M3 can compute cost per message.
-   * M6.1 metrics aggregation then sums these per-message costs.
+4. **Derived metadata & metrics**
 
-5. **Pipeline config integration**
+   * `derived["asr"]` for each voice message contains:
 
-   * `PipelineConfig` should load ASR defaults from `config/asr.yaml` when `asr_provider` or `asr_model` is `None`.
-   * `run_pipeline` passes ASR settings into `AudioTranscriber` via `AudioConfig`.
+     * `provider`
+     * `model`
+     * `pipeline_version`
+     * `total_duration_seconds`
+   * `metrics.json` includes:
 
----
+     * `asr_provider`, `asr_model`
+     * provider-specific cost totals, if available.
 
 ### Subtasks
 
-1. Implement `config/asr.yaml` and loader function to get defaults.
-2. Implement `AsrChunkResult`, `AsrBackend` protocol.
-3. Implement `WhisperBackend` stub with minimal, testable behavior (mocked in tests).
-4. Implement `GoogleSttBackend` stub with minimal, testable behavior (also mocked).
-5. Implement `AsrClient` dispatcher and retry/timeout logic.
-6. Extend `AudioConfig` and `AudioTranscriber` to use `AsrClient` (no provider-specific code inside `AudioTranscriber`).
-7. Plumb `asr_provider` + `asr_model` from `PipelineConfig` → `AudioConfig`.
-8. Ensure `derived["asr"]` always contains `provider` and `model`.
-9. Ensure `cost.py` and M3 cost logic are called with correct billing key.
-10. Document provider usage & environment variables (keys) in `README_M6_PIPELINE.md` or `README_M3.md`.
-
----
+1. Define `AsrProvider` protocol + `AsrChunkResult`.
+2. Implement `AsrClient` that chooses provider based on config.
+3. Implement Whisper + Google providers with stub methods (real integration in M6.5).
+4. Update `AudioTranscriber` to depend on `AsrClient`.
+5. Wire provider/model into `derived["asr"]` and `metrics.json`.
 
 ### Verification & Tests
 
-* `test_asr_client_whisper_basic`
-  With a mocked Whisper backend, ensure:
+* `test_asr_client_whisper`
+  With a mocked Whisper backend, ensure `AsrClient` calls the right provider and produces normalized results.
+* `test_asr_client_google`
+  Same for Google backend.
+* `test_derived_asr_provider_model`
+  After a run, each voice message’s `derived["asr"]` has correct `provider` and `model`, and metrics reflect them.
+* `test_pipeline_metrics_provider_counts` (inside `test_pipeline_metrics.py`)
+  Aggregates counts per `asr_provider` and per `status`.
 
-  * `AsrClient` calls the correct backend.
-  * Returns normalized `AsrChunkResult`.
-  * Retries on failure up to `max_retries`.
+### Acceptance (M6.2)
 
-* `test_asr_client_google_basic`
-  Same pattern for Google STT backend with mocks.
-
-* `test_audio_transcriber_records_provider_model`
-  For a dummy voice message, after transcription:
-
-  * `msg.derived["asr"]["provider"]` and `["model"]` match `PipelineConfig` settings.
-  * `metrics.json` summarises the same provider/model.
-
-* `test_cost_estimation_uses_billing_key`
-  For both Whisper and Google configs, ensure per-message cost uses the correct billing table entry.
-
-**Acceptance (M6.2)**
-
-* Changing `--asr-provider` and/or `--asr-model` on `run_pipeline.py` reflects correctly in:
-
-  * `derived["asr"].provider/model` per voice message.
-  * `metrics.json["asr_provider"]` / `["asr_model"]`.
-  * Total cost computed from the provider’s billing configuration.
-
-* Pipeline behavior (status/partial/failure logic) is unchanged except for provider/model selection.
+* `AsrClient` is the **only** ASR entrypoint used by `AudioTranscriber`.
+* Changing provider/model in config changes `derived["asr"]` and `metrics.json` but not overall pipeline shape.
+* Tests and metrics do not depend on live network calls (all providers mocked).
 
 ---
 
-## M6.3 — Streamlit UI (Local Web App)
+## M6.3 — Streamlit UI (Status Panel & Transcript Preview)
 
 **Objective**
-Provide a **local web UI** (Streamlit) that sits on top of `run_pipeline(cfg)` and `RunManifest` to:
+Provide a minimal Streamlit UI to:
 
-1. Configure runs (export folder, chat file, ASR provider, sample mode).
-2. Start a pipeline run.
-3. Show **live step progress** (M1–M3–M5).
-4. Show a **transcript preview** as voice notes are processed.
-5. Provide links to open/download the final outputs.
+* Configure and launch runs (export folder, chat file, ASR provider, sample mode).
+* List existing runs and show per-run status.
+* Preview transcripts of voice notes from `preview_transcripts.txt`.
 
 **Files**
 
 * `scripts/ui_app.py`
-* `src/pipeline/status.py` (helpers reused between tests/UI)
+* `src/pipeline/status.py`
 * `README_M6_UI.md`
-* `tests/test_status_helpers.py`
-* (Optional) `tests/test_ui_helpers_manifest_parsing.py`
+* Tests:
 
----
+  * `tests/test_status_helpers.py`
+  * `tests/test_ui_app_imports_and_layout.py`
 
 ### Deliverables
 
-1. **Streamlit app layout**
+1. **Status helper functions**
 
-   `scripts/ui_app.py` should define:
+   In `src/pipeline/status.py`:
 
-   * A **Run Configuration** section:
+   * `list_runs(root: str) -> list[RunSummary]`
 
-     * **Export folder** text input.
-     * **Scan** button → discovers chat text files in folder.
-     * **Chat file** dropdown populated from scan results.
-     * **ASR provider** dropdown (`whisper_openai`, `whisper_local`, `google_stt`).
-     * **Sample mode** checkbox + numeric input (`sample_voices`).
-     * **Run** button that creates a `PipelineConfig` and triggers `run_pipeline`.
+     * Finds `run_*` directories under `root`.
+     * Loads `run_manifest.json` and `metrics.json` if present.
+     * Returns a small summary (run_id, chat_file, status, message counts, started/finished timestamps).
 
-   * A **Run Status** section:
+   * `load_run_summary(run_dir: str) -> RunSummary`
 
-     * Dropdown or text input for `run_id` (default to latest run).
-     * Summary of pipeline steps (M1–M3–M5) with progress bars & counts from manifest.
-     * Aggregated metrics (total messages, voice ok/partial/failed, cost, elapsed time).
+   * `load_transcript_preview(run_dir: str) -> list[str]`
 
-   * A **Transcript Preview** section:
+     * Reads `preview_transcripts.txt` if present; returns empty list otherwise.
 
-     * Table showing latest N voice notes:
+2. **Streamlit layout**
 
-       | Time | Sender | Provider | Status | Excerpt |
+   `scripts/ui_app.py`:
 
-     * Data source: `preview_transcripts.txt` or `messages.M3.jsonl`.
+   * Left panel — **Run Configuration**
 
-   * An **Outputs** section:
+     * Export folder input.
+     * “Scan” button → populate chat files dropdown.
+     * Chat file dropdown.
+     * ASR provider dropdown (`whisper_openai`, `whisper_local`, `google_stt`).
+     * Sample mode checkbox / numeric input (e.g. “limit to first N messages”).
+     * **Run** button that calls `run_pipeline(cfg)`.
 
-     * Buttons/links to open/download:
+   * Right panel — **Runs & Details**
 
-       * `chat_with_audio.txt`
-       * `messages.M3.jsonl`
-       * `exceptions.csv`
-       * `metrics.json`
+     * Table of existing runs (from `list_runs`).
+     * Selecting a run shows:
 
-2. **Run launching**
+       * Run overview (status, provider, duration, cost, counts).
+       * Step-wise status table from `RunManifest`.
+       * A transcript preview area showing lines from `preview_transcripts.txt`.
 
-   * Use either:
+3. **UI behavior**
 
-     * A background **thread** inside the Streamlit process, or
-     * Spawn a separate `run_pipeline.py` **subprocess** from the UI.
+   * UI must not crash if manifests/metrics/preview are missing or invalid:
 
-   * The UI **must not block** while pipeline runs; it should rely on polling `run_manifest.json` and preview files to show progress.
-
-3. **Manifest & preview reading helpers**
-
-   `src/pipeline/status.py`:
-
-   * `list_runs(runs_root: Path) -> list[str]`
-     Returns sorted list of `run_id` directories.
-
-   * `load_run_summary(run_dir: Path) -> dict`
-     Reads `run_manifest.json` and `metrics.json`, merges into a simple dict structure for display.
-
-   * `load_transcript_preview(run_dir: Path, limit: int = 20) -> list[dict]`
-     Reads `preview_transcripts.txt` (or `messages.M3.jsonl` as fallback) and returns last `limit` rows (for UI table).
-
-4. **UI behavior & refresh**
-
-   * Streamlit’s rerun behavior should periodically refresh status:
-
-     * E.g. wrap status display in `st.autorefresh` or rely on Streamlit’s default behavior when the user interacts.
-     * Reads most recent manifest & preview files each render.
-
-   * When a new run starts, the UI shows:
-
-     * Step statuses turning from `pending` → `running` → `ok`.
-     * Voice note preview table gradually filling as `preview_transcripts.txt` grows.
-
-5. **Error surfacing**
-
-   * If `run_manifest.summary["error"]` exists, display it clearly in the UI:
-
-     * e.g., red `st.error("Run failed: <message>")`.
-
----
+     * Display a warning banner instead.
+   * UI must never mutate `run_manifest.json` or `metrics.json` directly; only the runner writes them.
 
 ### Subtasks
 
-1. Implement `src/pipeline/status.py` helpers (`list_runs`, `load_run_summary`, `load_transcript_preview`).
-2. Implement `scripts/ui_app.py` Streamlit layout (sections described above).
-3. Wire `Run` button to start a new `run_pipeline` invocation (thread/subprocess).
-4. Implement a simple **run history** selector (most recent run id preselected).
-5. Implement transcript preview using `preview_transcripts.txt` or `messages.M3.jsonl` fallback.
-6. Add download/open buttons for outputs (using Streamlit file download mechanisms).
-7. Document how to start the UI in `README_M6_UI.md`.
-
----
+1. Implement `RunSummary` dataclass and helper functions.
+2. Implement Streamlit app layout (config panel + runs panel + preview).
+3. Wire **Run** button to launch `run_pipeline` in a background thread/process.
+4. Add minimal logging to console (so launcher shows logs).
 
 ### Verification & Tests
 
-Logic-level tests (no real browser automation):
-
 * `test_status_helpers_list_runs`
-  Creates a temporary `runs/` folder with 2–3 dummy run dirs and asserts `list_runs()` returns them in expected order.
-
+  With a small fixture root, returns the expected runs with correct summary fields.
 * `test_status_helpers_load_run_summary`
-  Given a synthetic `run_manifest.json` + `metrics.json`, ensure `load_run_summary` produces structured summary with step names and basic metrics.
-
+  Loads a single run’s manifest/metrics and populates summary without crashing when fields are missing.
 * `test_status_helpers_transcript_preview_parses_file`
-  Given a small `preview_transcripts.txt`, ensure preview list has expected fields (time, sender, excerpt).
-
-UI smoke (optional, minimal):
-
+  Reads a sample `preview_transcripts.txt` and returns correct lines (UTF-8).
 * `test_ui_app_imports_and_layout`
-  Import `scripts.ui_app` in tests to ensure no top-level exceptions (e.g. missing imports). Optionally, verify that certain widget labels exist via Streamlit’s testing utilities if available.
+  Importing `scripts/ui_app.py` constructs the Streamlit layout without executing `run_pipeline` or hitting the filesystem hard.
 
-Manual acceptance (for you):
+### Acceptance (M6.3)
 
-* Run:
+* Running `streamlit run scripts/ui_app.py`:
 
-  ```bash
-  streamlit run scripts/ui_app.py
-  ```
-
-* In browser:
-
-  * Choose export folder & chat file.
-  * Select ASR provider.
-  * Click **Run** and observe:
-
-    * Step progress updates.
-    * Transcript preview populates as voice notes finish.
-    * Links to open final `chat_with_audio.txt` and metrics.
+  * Shows configuration controls, runs table, and transcript preview.
+  * Can launch at least one pipeline run end-to-end (small fixture) and update UI status.
 
 ---
 
-## M6.4 — Launcher (`.bat` / optional `.exe`) & Docs
+## M6.4 — Windows Launcher & Packaging
 
 **Objective**
-Provide a **double-click entry point** on Windows that:
-
-1. Opens a console window for logs.
-2. Activates the Python environment.
-3. Launches the Streamlit UI (`ui_app.py`).
-4. Leaves the console open so you can see logs/errors if anything goes wrong.
-
-Later (optional), package a `.exe` that wraps this behavior.
+Make it **one double-click** on Windows to open the UI, with logs visible and correct working directory.
 
 **Files**
 
 * `scripts/WhatsAppTranscriberUI.bat`
-* (Optional) `scripts/launcher.py` (Python wrapper for PyInstaller)
-* `README_M6_UI.md` (updated with launcher instructions)
+* (Optional) `scripts/launcher.py`
+* `README_M6_UI.md` (launcher section)
+* Tests:
 
----
+  * `tests/test_launcher_imports.py` (if `launcher.py` exists)
 
 ### Deliverables
 
 1. **Batch launcher**
 
-   `scripts/WhatsAppTranscriberUI.bat`:
+   * `WhatsAppTranscriberUI.bat`:
 
-   ```bat
-   @echo off
-   REM Adjust paths as needed for your environment
-   cd /d C:\path\to\your\repo
+     * Activates the correct virtualenv or uses `python` on PATH.
 
-   REM Activate venv (if used)
-   call venv\Scripts\activate
+     * `cd` to repo root.
 
-   REM Run Streamlit UI
-   streamlit run scripts\ui_app.py
+     * Runs:
 
-   REM Keep console open so logs are visible
-   pause
-   ```
+       ```bat
+       python -m streamlit run scripts/ui_app.py
+       ```
 
-   Behavior:
+     * Keeps console open so logs remain visible.
 
-   * Double-clicking this file:
+2. **Optional Python helper**
 
-     * Opens a console.
-     * Runs Streamlit.
-     * Opens browser to `http://localhost:8501`.
-     * Keeps console open after exit (`pause`), so you see any errors.
+   * `scripts/launcher.py` (optional) with helpers like `get_repo_root()`:
 
-2. **Optional Python launcher (for `.exe`)**
+     * Resolves repo root robustly regardless of how the batch file is invoked.
+   * Batch script can call:
 
-   `scripts/launcher.py`:
+     ```bat
+     python scripts/launcher.py
+     ```
 
-   * A small script that:
-
-     * Locates repo root.
-     * Ensures environment variables (like `OPENAI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`) are present or emits a friendly error.
-     * Calls `streamlit run scripts/ui_app.py` via `subprocess`.
-
-   * Used as the **entry point** for PyInstaller if/when you package an `.exe`.
+     which then starts Streamlit.
 
 3. **Docs**
 
-   Update `README_M6_UI.md` with:
+   * README section showing:
 
-   * How to run UI via:
-
-     * `streamlit run scripts/ui_app.py` (dev mode).
-     * Double-clicking `WhatsAppTranscriberUI.bat`.
-
-   * Basic troubleshooting (e.g. port in use, missing keys).
-
----
+     * How to run the UI via CLI and via double-click.
+     * Where logs go and how to debug if Streamlit fails to start.
 
 ### Subtasks
 
-1. Create `WhatsAppTranscriberUI.bat` with working paths for your repo layout.
-2. (Optional) Implement `scripts/launcher.py` and test it via `python scripts/launcher.py`.
-3. Update `README_M6_UI.md` with exact instructions and screenshots/notes if needed.
-4. (If you later use PyInstaller) create a separate task/PR for packaging `launcher.py` into `.exe`.
-
----
+1. Implement batch launcher for Windows.
+2. (Optional) Implement `launcher.py` for path handling.
+3. Document usage and troubleshooting.
 
 ### Verification & Tests
 
-Automated tests for `.bat` are not necessary; rely on **manual smoke**:
+* If `launcher.py` exists:
 
-* Double-click `scripts/WhatsAppTranscriberUI.bat`:
-
-  * Console opens.
-  * Streamlit UI opens in browser.
-  * If you close the browser tab, console still shows logs.
-  * If something fails (e.g., missing `streamlit`), error is visible in console.
-
-If `scripts/launcher.py` exists:
-
-* `test_launcher_imports`
-  Import and call a small helper (e.g., `get_repo_root()`) to ensure no path logic breaks.
+  * `test_launcher_imports`
+    Import and call a small helper (e.g., `get_repo_root()`) to ensure no path logic breaks.
 
 **Acceptance (M6.4)**
 
 * On your machine, you can **double-click one file** and end up at the Streamlit UI without touching CLI.
-* Console logs remain visible for debugging, matching your mental model: “I double-click, browser opens, I see the steps and output.”
+* Console logs remain visible for debugging, matching your mental model: "I double-click, browser opens, I see the steps and output."
+
+### M6.4.1 — Credential Storage & UI Improvements (Completed)
+
+**Completed:** 2025-01-20
+
+**Problem:**
+- Users couldn't save API keys (OpenAI, Google) in the UI - both failed silently
+- Root causes:
+  1. Old WSL Streamlit process running (started Nov 19) conflicted with Windows batch file
+  2. Generic error messages ("Failed to save", "File not found") provided no debugging info
+  3. Path normalization missing (quotes, spaces, env vars not handled)
+  4. No indication which Python was running the UI
+
+**Solution:**
+
+1. **Enhanced `src/utils/credentials.py`:**
+   - Added `_normalize_path()` helper (strips quotes, expands env vars/~)
+   - Changed `save_credential()` to raise detailed exceptions instead of generic bool
+   - `save_google_credentials_path()` now validates file exists BEFORE keyring save
+   - Returns normalized path so UI can show exactly what Python checked
+
+2. **Improved `scripts/ui_app.py`:**
+   - Shows Python executable at top of API Keys section (verify correct Python)
+   - Specific exception handling with detailed messages:
+     - `ValueError` → "Invalid input: ..."
+     - `FileNotFoundError` → Shows both normalized path AND original input
+     - `RuntimeError` → Shows actual keyring error
+   - Success messages show normalized paths saved
+
+3. **Enhanced `scripts/launcher.py`:**
+   - Added `--server.runOnSave=true` flag so code changes auto-reload
+   - Added `--server.fileWatcherType=auto` for filesystem watching
+   - Prevents stale code caching issues
+
+4. **Process cleanup:**
+   - Documented zombie process debugging via Chrome DevTools MCP
+   - Proper cleanup of conflicting Streamlit instances
+
+**Files Changed (3):**
+- `src/utils/credentials.py` (~25 LOC)
+- `scripts/ui_app.py` (~35 LOC)
+- `scripts/launcher.py` (~2 LOC)
+
+**Result:**
+- Users can now save credentials and see exactly why if it fails
+- Code changes auto-reload without restarting batch file
+- No more zombie Streamlit processes conflicting with launcher
+
+---
+
+## M6.5 — ASR Provider Integration & Error Mapping Hardening
+
+**Objective**
+Build on **M6.2** to hook `AsrClient` up to *real* provider backends (Whisper, Google), with robust env/config handling, language hints (incl. Arabic), and deterministic error → `StatusReason` mapping used by M3 + M6 metrics/UI.
+
+**Files**
+
+* `src/utils/asr.py`
+* `src/audio_transcriber.py`
+* `src/pipeline/config.py`
+* `config/asr.yaml`
+* `README.md` or `README_M6_PIPELINE.md`
+* Tests:
+
+  * `tests/test_asr_client_whisper.py`
+
+    * `test_asr_client_whisper_basic`
+  * `tests/test_asr_client_google.py`
+
+    * `test_asr_client_google_basic`
+  * `tests/test_asr_provider_error_mapping.py`
+  * `tests/test_asr_language_hints_plumbing.py`
+
+### Deliverables
+
+1. **Config + env validation**
+
+   * Extend `config/asr.yaml` with provider-specific env keys and language knobs, e.g.:
+
+     ```yaml
+     default_provider: whisper_openai
+     providers:
+       whisper_openai:
+         model: whisper-1
+         timeout_seconds: 30
+         max_retries: 2
+         billing: "openai_whisper_v1"
+         env_key: "OPENAI_API_KEY"
+         default_language: "auto"
+       google_stt:
+         model: "google-default"
+         timeout_seconds: 30
+         max_retries: 2
+         billing: "google_stt_standard"
+         env_key: "GOOGLE_APPLICATION_CREDENTIALS"
+         default_language: "auto"
+     ```
+
+   * Add helper:
+
+     ```python
+     def resolve_asr_config(provider_name: str) -> AsrProviderConfig: ...
+     ```
+
+     which validates required env var is present and raises a clear `ConfigError` if not.
+
+2. **Language hints plumbed end-to-end**
+
+   * Extend `PipelineConfig` / `AudioConfig` with `asr_language: str | Literal["auto"] = "auto"`.
+   * CLI flag `--asr-language` flows into `AsrClient` and provider backends.
+   * `derived["asr"]` always includes:
+
+     ```python
+     {
+       "provider": "...",
+       "model": "...",
+       "language_hint": "auto|ar|en|...",
+       "detected_language": "...",  # optional, if provider returns it
+     }
+     ```
+
+3. **Provider backends wired to real APIs (behind mocks in tests)**
+
+   * `WhisperBackend`:
+
+     * Uses `OPENAI_API_KEY`.
+     * Implements `transcribe_chunk(...)` with timeout + retries from config.
+     * Normalizes responses to `AsrChunkResult`.
+
+   * `GoogleSttBackend`:
+
+     * Uses `GOOGLE_APPLICATION_CREDENTIALS`.
+     * Reads audio bytes and calls Google STT client.
+     * Same `transcribe_chunk(...)` signature and normalization.
+
+   * **No live HTTP** in tests — everything mocked at backend level.
+
+4. **Deterministic error → `StatusReason` mapping**
+
+   * Introduce:
+
+     ```python
+     AsrErrorKind = Literal["timeout", "auth", "quota", "client", "server", "unknown"]
+     ```
+
+   * Helper:
+
+     ```python
+     def map_asr_error_to_status_reason(kind: AsrErrorKind) -> StatusReason:
+         # timeout -> "timeout_asr"
+         # others -> "asr_failed"
+     ```
+
+   * `AudioTranscriber` uses this helper so:
+
+     * Timeouts → `status_reason="timeout_asr"`.
+     * Other fatal errors → `status_reason="asr_failed"`.
+
+   * `derived["asr"]["error_summary"]` contains:
+
+     ```python
+     {
+       "chunks_ok": int,
+       "chunks_error": int,
+       "last_error_kind": "timeout|auth|quota|client|server|unknown",
+       "last_error_message": "short provider-specific message",
+     }
+     ```
+
+5. **Docs**
+
+   * README section explaining:
+
+     * How to configure `config/asr.yaml`.
+     * Required env vars per provider.
+     * How `--asr-provider`, `--asr-model`, `--asr-language` interact.
+     * How errors surface via `status_reason` and `error_summary`.
+
+### Subtasks
+
+1. Extend `config/asr.yaml` and add `resolve_asr_config(...)`.
+2. Add `asr_language` to `PipelineConfig` / `AudioConfig`; plumb CLI → config → `AsrClient` → backends.
+3. Implement real Whisper + Google backends.
+4. Add `AsrErrorKind` + `map_asr_error_to_status_reason(...)`.
+5. Update `AudioTranscriber` to use error mapping consistently.
+6. Ensure `derived["asr"]` mentions provider/model/language_hint/error_summary.
+7. Write tests + docs.
+
+### Verification & Tests
+
+* `test_asr_client_whisper_basic`
+  With mocked Whisper backend:
+
+  * `AsrClient` selects proper provider/model/language_hint.
+  * Returned `AsrChunkResult` has correct metadata.
+* `test_asr_client_google_basic`
+  Same, for Google backend.
+* `test_asr_provider_error_mapping`
+  For each `AsrErrorKind`, assert correct `StatusReason` and ensure `AudioTranscriber` maps to expected `status`/`status_reason`.
+* `test_asr_language_hints_plumbing`
+  With `--asr-language=ar`, confirm:
+
+  * Backend receives `"ar"`.
+  * `derived["asr"]["language_hint"] == "ar"`.
+
+### Acceptance (M6.5)
+
+* Changing `--asr-provider`, `--asr-model`, or `--asr-language`:
+
+  * Affects `derived["asr"]` and `metrics.json` exactly as expected.
+* Missing env vars for a provider fail fast with a clear error.
+* Timeouts vs other provider errors are visible via `status_reason` and `error_summary`.
+* No tests make live API calls; everything is mocked.
+
+---
+
+## M6.6 — Audio Error Handling & Chunking Hardening
+
+**Objective**
+Close edge-cases where WAV parsing/chunking or ASR orchestration can silently misbehave (e.g. 0-length WAV, no chunks), and guarantee that every failure path produces a deterministic `status`, `status_reason`, and placeholder — never a crash or silent no-op.
+
+**Files**
+
+* `src/audio_transcriber.py`
+* `src/utils/asr.py`
+* Tests:
+
+  * `tests/test_audio_chunking_hardening.py`
+
+    * `test_chunking_failure_sets_failed_status`
+    * `test_chunk_manifest_non_empty_for_valid_audio`
+    * `test_asr_chunking_error_sets_error_summary`
+  * `tests/test_asr_error_mapping_realistic.py`
+
+### Deliverables
+
+1. **Chunking invariants**
+
+   * `_chunk_wav(wav_path, cfg)`:
+
+     * For valid audio:
+
+       * Returns a **non-empty** list of chunks with strictly increasing `start_sec` / `end_sec`.
+     * For invalid/degenerate audio (0-length, unreadable WAV):
+
+       * Raises a dedicated `ChunkingError` (or equivalent).
+
+   * Invariant:
+
+     > `AudioTranscriber.transcribe` must never proceed to ASR with an empty chunk list.
+
+2. **Transcribe-level failure handling**
+
+   * In `AudioTranscriber.transcribe(m)`:
+
+     * If `_to_wav` fails → `status_reason ∈ {"ffmpeg_failed","timeout_ffmpeg"}` (existing behavior).
+
+     * If `_chunk_wav` raises `ChunkingError`:
+
+       * Set `status="failed"`, `status_reason ∈ {"asr_failed","audio_unsupported_format"}`.
+       * If `content_text` empty, set placeholder, e.g. `[AUDIO TRANSCRIPTION FAILED (chunking)]`.
+       * `derived["asr"]["error_summary"]` with `chunks_ok=0`, `chunks_error=0`, `last_error_kind="chunking"`.
+
+     * If ASR is called but every chunk errors:
+
+       * Already handled via M3.x logic; assert via tests in this milestone.
+
+3. **Realistic ASR error scenarios**
+
+   * Simulate via mocks:
+
+     * Some chunks succeed, last chunk times out.
+     * First chunk fails with provider `quota`/`auth` error.
+     * Truncated WAV where provider returns “invalid audio”.
+
+   * Ensure:
+
+     * Mixed success/failure → `status="partial"`, `status_reason="asr_partial"`.
+     * All fatal at ASR level → `status="failed"`, `status_reason` from M6.5 mapping.
+
+4. **Logging / derived metadata**
+
+   * Ensure `derived["asr"]` always contains:
+
+     * `total_duration_seconds` (0 for chunking failures).
+     * A `chunks` list (possibly empty) and `error_summary` for failures.
+
+### Subtasks
+
+1. Introduce `ChunkingError` and use inside `_chunk_wav`.
+2. Harden `_chunk_wav` to:
+
+   * Compute duration deterministically.
+   * Raise `ChunkingError` for `total_seconds <= 0` or I/O issues.
+3. Update `AudioTranscriber.transcribe`:
+
+   * Catch `ChunkingError`, set failed status + placeholder + error_summary.
+   * Guard against empty chunk lists.
+4. Add realistic ASR error simulations in tests.
+
+### Verification & Tests
+
+* `test_chunking_failure_sets_failed_status`
+  For a 0-length WAV fixture, `_chunk_wav` raises and `transcribe` sets `status="failed"` with correct `status_reason` and placeholder text.
+* `test_chunk_manifest_non_empty_for_valid_audio`
+  For normal audio, `_chunk_wav` returns a non-empty, ordered chunk list.
+* `test_asr_error_mapping_realistic`
+  Simulates:
+
+  * Mixed chunk success + timeout → `partial/asr_partial`.
+  * All chunks timeout → `failed/timeout_asr`.
+* `test_asr_chunking_error_sets_error_summary`
+  Chunking failures write meaningful `derived["asr"]["error_summary"]`.
+
+### Acceptance (M6.6)
+
+* No code path leaves a `kind="voice"` message in limbo:
+
+  * Either ASR-annotated, or
+  * Marked failed with clear `status_reason` and placeholder.
+* Zero-length / truncated audio never crashes the pipeline or yields silent empty transcripts.
+* New tests pass; no regressions in existing M3/M6 tests.
+
+---
+
+## M6.7 — Manifest & Metrics Schema (Run-Level)
+
+**Objective**
+Formalize the **run-level contract** for `run_manifest.json` and `metrics.json` so that M6 runner + UI (and future tools) can rely on a stable, versioned schema.
+
+**Files**
+
+* `src/pipeline/manifest.py`
+* `src/pipeline/metrics.py`
+* `schema/run_manifest.schema.json`
+* `schema/metrics.schema.json`
+* `README_M6_PIPELINE.md`
+* Tests:
+
+  * `tests/test_manifest_schema_basic.py`
+  * `tests/test_metrics_schema_basic.py`
+  * `tests/test_manifest_and_metrics_golden.py`
+
+### Deliverables
+
+1. **Typed models for manifest + metrics**
+
+   * Refine `RunManifest` with:
+
+     * `schema_version`
+     * `run_id`, `root`, `chat_file`
+     * `start_time`, `end_time`
+     * `steps: dict[StepName, StepProgress]`
+     * `summary` including:
+
+       * `messages_total`
+       * `voice_total`
+       * `error: str | None`
+
+   * `RunMetrics` with:
+
+     * `schema_version`
+     * `messages_total`
+     * `voice_total`, `voice_ok`, `voice_partial`, `voice_failed`
+     * `media_resolved`, `media_unresolved`, `media_ambiguous`
+     * `asr_provider`, `asr_model`, `asr_language`
+     * `audio_seconds_total`
+     * `asr_cost_total_usd`
+     * `wall_clock_seconds`
+
+2. **JSON Schemas**
+
+   * `schema/run_manifest.schema.json`
+   * `schema/metrics.schema.json`
+
+   Helpers:
+
+   ```python
+   def validate_manifest(data: dict) -> None: ...
+   def validate_metrics(data: dict) -> None: ...
+   ```
+
+   used in tests (and optionally behind a debug flag in runner).
+
+3. **Versioning policy**
+
+   * `MANIFEST_SCHEMA_VERSION` and `METRICS_SCHEMA_VERSION` constants.
+   * MAJOR/MINOR/PATCH rules similar to `Message.schema_version`.
+   * Both `run_manifest.json` and `metrics.json` must include `schema_version`.
+
+4. **Golden fixtures**
+
+   * Under `tests/fixtures/pipeline_small_chat/`:
+
+     * `expected_run_manifest.json`
+     * `expected_metrics.json`
+   * Snapshot tests compare actual to expected, ignoring volatile fields (e.g. timestamps) via normalization.
+
+### Subtasks
+
+1. Refine `RunManifest` and `RunMetrics` dataclasses + serializers.
+2. Author JSON schemas.
+3. Implement `validate_manifest` / `validate_metrics`.
+4. Generate goldens from known fixture run.
+5. Document schema & versioning rules.
+
+### Verification & Tests
+
+* `test_manifest_schema_basic`
+  Validates `expected_run_manifest.json` against `run_manifest.schema.json`.
+* `test_metrics_schema_basic`
+  Validates `expected_metrics.json` against `metrics.schema.json`.
+* `test_manifest_and_metrics_golden`
+  Runs pipeline on fixture, normalizes volatile fields, and compares manifest/metrics to goldens.
+
+### Acceptance (M6.7)
+
+* All manifests/metrics written by `run_pipeline`:
+
+  * Conform to their schemas.
+  * Include `schema_version`.
+* M6 UI only depends on documented fields; adding new optional fields is backwards compatible.
+* Golden tests fail loudly on breaking changes unless schema version/goldens are deliberately updated.
+
+---
+
+## M6.8 — Rendering RTL/Arabic Friendliness
+
+**Objective**
+Improve **text** and **Markdown** renderers so mixed eArabic/English chats render predictably in LTR environments while keeping determinism. Add optional bidi controls for advanced use, but default behavior must remain backward-compatible.
+
+**Files**
+
+* `src/writers/text_renderer.py`
+* `src/writers/markdown_renderer.py`
+* `README_M5_RENDERING.md`
+* Tests:
+
+  * `tests/test_text_renderer_arabic_content.py`
+
+    * `test_text_renderer_arabic_content_preserved`
+    * `test_text_renderer_bidi_marks_mode`
+  * `tests/test_markdown_renderer_arabic_content.py`
+
+    * `test_markdown_renderer_arabic_placeholder`
+  * (optional) `tests/test_renderers_utf8_and_newlines.py`
+
+### Deliverables
+
+1. **RTL-aware render options (text renderer)**
+
+   * Extend `TextRenderOptions` with:
+
+     ```python
+     RtlMode = Literal["none", "bidi_marks"]
+
+     @dataclass
+     class TextRenderOptions:
+         ...
+         rtl_mode: RtlMode = "none"
+     ```
+
+   * `rtl_mode=="none"`:
+
+     * Preserve current behavior exactly.
+
+   * `rtl_mode=="bidi_marks"`:
+
+     * Detect Arabic characters (e.g. `\u0600-\u06FF`) and wrap the entire body for those messages with:
+
+       ```python
+       RLE = "\u202B"  # Right-to-Left Embedding
+       PDF = "\u202C"  # Pop Directional Formatting
+       ```
+
+     * Helper:
+
+       ```python
+       def wrap_rtl_segments(text: str, rtl_mode: RtlMode) -> str: ...
+       ```
+
+     * Apply just before writing out each message line.
+
+2. **RTL-aware Markdown skeleton**
+
+   * Similar `MarkdownRenderOptions` with `rtl_mode`.
+   * When `rtl_mode=="bidi_marks"`:
+
+     * Apply `wrap_rtl_segments` to:
+
+       * text messages,
+       * voice transcript blockquotes,
+       * media captions.
+
+3. **UTF-8 and determinism**
+
+   * Both renderers write files with:
+
+     ```python
+     open(out_path, "w", encoding="utf-8", newline="\n")
+     ```
+
+   * For given `messages.M3.jsonl` and `rtl_mode`, output must be byte-for-byte deterministic.
+
+   * `rtl_mode` affects **only** output text, never `Message` objects.
+
+4. **Docs**
+
+   * `README_M5_RENDERING.md` explains:
+
+     * RTL issues in many editors/terminals.
+     * When to use `rtl_mode="bidi_marks"`.
+     * Examples of output for each mode.
+
+### Subtasks
+
+1. Add `RtlMode` + `rtl_mode` to text renderer options.
+2. Implement `wrap_rtl_segments` and wire into text renderer.
+3. Add equivalent options to Markdown renderer.
+4. Add/extend tests with Arabic/English mixed fixtures.
+5. Write/update rendering docs.
+
+### Verification & Tests
+
+* `test_text_renderer_arabic_content_preserved`
+  With default options, Arabic codepoints are preserved and output matches existing golden.
+* `test_text_renderer_bidi_marks_mode`
+  With `rtl_mode="bidi_marks"`, Arabic-containing messages are wrapped with `\u202B...\u202C` and non-Arabic messages are unchanged.
+* `test_markdown_renderer_arabic_placeholder`
+  Arabic content appears intact in Markdown output; bidi marks present as expected when enabled.
+* `test_renderers_utf8_and_newlines`
+  Asserts outputs are valid UTF-8 with only `\n` newlines.
+
+### Acceptance (M6.8)
+
+* Arabic-heavy chats produce readable, stable `chat_with_audio.txt` / `.md` in both modes.
+* Toggling `rtl_mode` only changes bidi markers, not the underlying JSONL or pipeline logic.
+* RTL tests pass; no regressions in existing M5 renderer tests.
 
 ---
 
@@ -3509,57 +3896,155 @@ If `scripts/launcher.py` exists:
 
 * **Concurrency**:
 
-  * M3 audio transcription runs concurrently when `max_workers_audio > 1`.
-  * Outputs (JSONL, text) remain deterministic vs single-threaded run.
+  * Increasing `max_workers_audio` from 1 to N does **not** change any outputs:
 
-* **Resume**:
+    * `messages.M3.jsonl`
+    * `chat_with_audio.txt`
+    * `run_manifest.json`
+    * `metrics.json`
 
-  * Step-level reuse of existing JSONL outputs.
-  * Per-voice reuse based on `derived["asr"]["pipeline_version"]`.
-  * Killing the process and re-running completes without re-doing work already done.
+* **Resume & caching**:
 
-* **Metrics**:
+  * Stopping the process mid-M3 and re-running with same config:
 
-  * `metrics.json` contains meaningful counts, durations, and cost.
-  * `RunManifest.summary["metrics"]` reflects the same.
+    * Reuses already-transcribed messages (identified via `derived["asr"]` / cache key).
+    * Completes without duplicating work.
+    * Leaves `run_manifest.json` consistent.
 
-* **Exceptions**:
+* **Failure surfaces are visible, not fatal**:
 
-  * Bad audio files/media do not crash pipeline; they are handled via existing M3 status/status_reason semantics.
-  * Pipeline only fails “hard” for genuine infra/logic problems (e.g., file not found, schema mismatch), which are captured in manifest and visible in UI/logs.
+  * Bad chat file / missing export folder:
 
-* **UI**:
+    * CLI returns non-zero exit code, manifest marks step as `failed`, and error summary is present.
+  * Bad audio / unsupported format:
 
-  * Shows:
+    * Messages are marked with `status="failed"` and appropriate `status_reason` (`ffmpeg_failed`, `audio_unsupported_format`, `asr_failed`, `timeout_asr`).
+    * Renderer shows placeholder text but never crashes.
 
-    * Step progress.
-    * Live transcript previews (from preview file).
-    * Correct ASR provider/model and cost summary.
+* **Contracts honored**:
 
-  * Allows **provider switching** (Whisper vs Google) per run without code changes.
+  * All JSONL outputs obey `Message` schema invariants.
+  * Required per-run files exist: `messages.M1/M2/M3.jsonl`, `chat_with_audio.txt`, `run_manifest.json`, `metrics.json`.
+  * `preview_transcripts.txt` is optional and treated as “no data yet” when missing.
+
+* **UI behavior**:
+
+  * UI lists runs from `run_manifest.json` / `metrics.json`.
+  * UI never crashes due to missing/invalid manifests or previews; it shows clear warnings instead.
+  * Transcript previews match `preview_transcripts.txt`.
+
+---
+
+**Key tests (exhaustive for M6)**
+*All of these should exist and stay green for M6 to be considered “done.”*
 
 ---
 
-## M6 — Test Plan (Quick List)
+**Pipeline & runner**
 
-* `test_pipeline_config_root_paths`
-* `test_pipeline_manifest_initial_structure`
-* `test_pipeline_runner_sequential_happy_path`
-* `test_pipeline_runner_concurrent_matches_sequential`
-* `test_pipeline_resume_skips_completed_steps`
-* `test_pipeline_metrics_populated`
-* `test_run_pipeline_cli_smoke`
-* `test_asr_client_whisper_basic`
-* `test_asr_client_google_basic`
-* `test_audio_transcriber_records_provider_model`
-* `test_cost_estimation_uses_billing_key`
-* `test_status_helpers_list_runs`
-* `test_status_helpers_load_run_summary`
-* `test_status_helpers_transcript_preview_parses_file`
-* `test_ui_app_imports_and_layout` (lightweight)
-* Manual: double-click `WhatsAppTranscriberUI.bat` and run a full pipeline end-to-end from UI.
+* `tests/test_pipeline_config.py` — pipeline config parsing, root/chat/run_dir resolution, CLI → config mapping.
+
+  * `test_pipeline_config_root_paths`
+* `tests/test_pipeline_manifest.py` — `RunManifest` structure, step status transitions, JSON (de)serialization.
+
+  * `test_pipeline_manifest_initial_structure`
+* `tests/test_pipeline_runner_sequential.py` — happy-path sequential M1→M2→M3→M5.1 orchestration on a small chat.
+
+  * `test_pipeline_runner_sequential_happy_path`
+* `tests/test_pipeline_runner_concurrent.py` — concurrency in M3, ensuring multi-worker runs are byte-for-byte identical to sequential.
+
+  * `test_pipeline_runner_concurrent_matches_sequential`
+* `tests/test_pipeline_resume.py` — resume semantics, skipping completed steps/messages without corrupting outputs.
+
+  * `test_pipeline_resume_skips_completed_steps`
+* `tests/test_pipeline_metrics.py` — `RunMetrics` aggregation, counts/costs consistency with fixture data.
+
+  * `test_pipeline_metrics_populated`
+  * `test_pipeline_metrics_provider_counts`
+* `tests/test_run_pipeline_cli_smoke.py` — end-to-end CLI smoke test; basic failure modes don’t crash the process.
+
+  * `test_run_pipeline_cli_smoke`
 
 ---
+
+**ASR providers & error handling**
+
+* `tests/test_asr_client_whisper.py` — Whisper backend wiring into `AsrClient`, including model/provider selection and normalized results.
+
+  * `test_asr_client_whisper`
+  * `test_asr_client_whisper_basic`
+* `tests/test_asr_client_google.py` — Google STT backend wiring into `AsrClient`, same guarantees as Whisper.
+
+  * `test_asr_client_google`
+  * `test_asr_client_google_basic`
+* `tests/test_asr_provider_error_mapping.py` — deterministic mapping from provider error kinds → global `StatusReason` enums.
+
+  * `test_asr_provider_error_mapping`
+* `tests/test_asr_language_hints_plumbing.py` — `--asr-language` propagation from CLI → config → backend → `derived["asr"].language_hint`.
+
+  * `test_asr_language_hints_plumbing`
+* `tests/test_asr_error_mapping_realistic.py` — realistic mixed-success scenarios (timeouts, quota, auth) mapped to `ok/partial/failed` + correct `status_reason`.
+
+  * `test_asr_error_mapping_realistic`
+* `tests/test_audio_chunking_hardening.py` — chunking invariants: non-empty chunks for valid audio, `ChunkingError` for degenerate WAVs, placeholder + `error_summary` on failure.
+
+  * `test_chunking_failure_sets_failed_status`
+  * `test_chunk_manifest_non_empty_for_valid_audio`
+  * `test_asr_chunking_error_sets_error_summary`
+* `tests/test_derived_asr_provider_model.py` — `derived["asr"]` and `metrics.json` always include provider/model and stay in sync with config.
+
+  * `test_derived_asr_provider_model`
+
+---
+
+**Manifest & metrics schema**
+
+* `tests/test_manifest_schema_basic.py` — `run_manifest.json` shape validation against `run_manifest.schema.json`.
+
+  * `test_manifest_schema_basic`
+* `tests/test_metrics_schema_basic.py` — `metrics.json` shape validation against `metrics.schema.json`.
+
+  * `test_metrics_schema_basic`
+* `tests/test_manifest_and_metrics_golden.py` — golden comparison of manifest/metrics for `pipeline_small_chat` (with normalization of volatile fields).
+
+  * `test_manifest_and_metrics_golden`
+
+---
+
+**UI & status**
+
+* `tests/test_status_helpers.py` — listing runs, loading summaries, and preview lines from `run_dir` without crashing on missing/partial files.
+
+  * `test_status_helpers_list_runs`
+  * `test_status_helpers_load_run_summary`
+  * `test_status_helpers_transcript_preview_parses_file`
+* `tests/test_ui_app_imports_and_layout.py` — Streamlit app imports cleanly and builds the expected layout without side effects.
+
+  * `test_ui_app_imports_and_layout`
+
+---
+
+**Rendering / RTL**
+
+* `tests/test_text_renderer_arabic_content.py` — Arabic text preserved in text renderer; bidi-marks mode wraps Arabic messages correctly and deterministically.
+
+  * `test_text_renderer_arabic_content_preserved`
+  * `test_text_renderer_bidi_marks_mode`
+* `tests/test_markdown_renderer_arabic_content.py` — same guarantees for Markdown renderer (Arabic content + bidi marks where enabled).
+
+  * `test_markdown_renderer_arabic_placeholder`
+* `tests/test_renderers_utf8_and_newlines.py` *(optional but recommended)* — all renderers write UTF-8 with `\n` newlines only.
+
+  * `test_renderers_utf8_and_newlines`
+
+---
+
+**Launcher (if implemented)**
+
+* `tests/test_launcher_imports.py` — Windows launcher helper (`launcher.py`) imports and resolves repo root / entrypoint without path errors.
+
+  * `test_launcher_imports`
+
 
 # Dev Notes (for Claude Code & Codex)
 

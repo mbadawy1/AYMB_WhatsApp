@@ -1,0 +1,7 @@
+2025-01-01 00:00:00 - SYSTEM: Alice created this group[status=ok]
+2025-01-01 00:00:00 - Alice: Hello world[status=ok]
+2025-01-01 00:00:01 - Bob: Hey there[status=ok]
+2025-01-01 00:00:02 - Alice: [IMAGE: IMG-1][status=ok]
+2025-01-01 00:00:03 - Bob: multi[status=ok]
+    line
+2025-01-01 00:00:04 - Alice: [AUDIO TRANSCRIPTION FAILED][status=failed, reason=asr_failed]

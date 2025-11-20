@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Message",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "idx": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ts": {
+      "type": "string"
+    },
+    "sender": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "text",
+        "voice",
+        "image",
+        "video",
+        "document",
+        "sticker",
+        "system",
+        "unknown"
+      ]
+    },
+    "content_text": {
+      "type": "string",
+      "default": ""
+    },
+    "raw_line": {
+      "type": "string",
+      "default": ""
+    },
+    "raw_block": {
+      "type": "string",
+      "default": ""
+    },
+    "media_hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "media_filename": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "caption": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "derived": {
+      "type": "object",
+      "default": {}
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "partial",
+        "failed",
+        "skipped"
+      ],
+      "default": "ok"
+    },
+    "partial": {
+      "type": "boolean",
+      "default": false
+    },
+    "status_reason": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "merged_into_previous_media",
+            "unresolved_media",
+            "ambiguous_media",
+            "ffmpeg_failed",
+            "timeout_ffmpeg",
+            "vad_no_speech",
+            "asr_failed",
+            "timeout_asr",
+            "asr_partial",
+            "audio_unsupported_format"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "context": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "errors": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "idx",
+    "ts",
+    "sender",
+    "kind",
+    "content_text",
+    "raw_line",
+    "raw_block",
+    "media_hint",
+    "media_filename",
+    "caption",
+    "derived",
+    "status",
+    "partial",
+    "status_reason",
+    "errors"
+  ]
+}

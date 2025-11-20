@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "messages_total": 3,
+  "voice_total": 1,
+  "voice_status": {
+    "ok": 1,
+    "partial": 0,
+    "failed": 0
+  },
+  "media_resolution": {
+    "resolved": 1,
+    "unresolved": 0,
+    "ambiguous": 0
+  },
+  "audio_seconds_total": 5.2,
+  "asr_cost_total_usd": 0.002,
+  "wall_clock_seconds": 300.0,
+  "asr_provider": "whisper_openai",
+  "asr_model": "whisper-1",
+  "asr_language": "auto"
+}

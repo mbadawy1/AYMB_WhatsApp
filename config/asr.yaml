@@ -1,0 +1,71 @@
+# ASR Provider Configuration
+# Backend selection:
+# - *_real backends call live APIs
+# - *_stub backends are deterministic for offline testing
+
+default_provider: whisper_openai
+providers:
+  whisper_openai:
+    backend: whisper_stub
+    model: whisper-1
+    available_models:
+      - whisper-1
+      - whisper-large-v3
+    timeout_seconds: 30
+    max_retries: 2
+    billing: openai_whisper_v1
+    env_key: OPENAI_API_KEY
+    require_env: false
+    default_language: auto
+    languages:
+      - code: auto
+        label: Auto detect
+      - code: en
+        label: English
+      - code: ar
+        label: Arabic
+      - code: es
+        label: Spanish
+    api_versions: []
+  whisper_local:
+    backend: whisper_stub
+    model: whisper-local
+    available_models:
+      - whisper-local
+    timeout_seconds: 30
+    max_retries: 1
+    billing: local_cpu
+    require_env: false
+    default_language: auto
+    languages:
+      - code: auto
+        label: Auto detect
+    api_versions: []
+  google_stt:
+    backend: google_stub
+    model: chirp-3
+    available_models:
+      - chirp-3
+      - chirp-2
+      - chirp-1
+    timeout_seconds: 30
+    max_retries: 2
+    billing: google_stt_standard
+    env_key: GOOGLE_APPLICATION_CREDENTIALS
+    require_env: true
+    default_language: ar-EG
+    languages:
+      - code: ar-EG
+        label: Arabic (Egypt)
+      - code: ar-SA
+        label: Arabic (Saudi Arabia)
+      - code: en-US
+        label: English (United States)
+      - code: en-GB
+        label: English (United Kingdom)
+      - code: es-ES
+        label: Spanish (Spain)
+    api_versions:
+      - v2
+      - v1
+    default_api_version: v2

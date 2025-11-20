@@ -1,0 +1,5 @@
+resolver:
+  weights: {hint: 3, ext: 2, seq: 1, mtime: 1}
+  tau: 0.75
+  tie_margin: 0.02
+  clock_drift_hours: 4

@@ -1,0 +1,5 @@
+{"idx": 0, "ts": "2025-11-17T21:10:02Z", "sender": "Alice", "kind": "text", "content_text": "Hello, this is a message"}
+{"idx": 1, "ts": "2025-11-17T21:10:05Z", "sender": "Alice", "kind": "voice", "content_text": "This is the transcribed text of the voice note...", "status": "ok"}
+{"idx": 2, "ts": "2025-11-17T21:11:00Z", "sender": "Bob", "kind": "image", "media_hint": "IMG-20251117-WA0001.jpg", "caption": "Nice photo"}
+{"idx": 3, "ts": "2025-11-17T21:12:00Z", "sender": "SYSTEM", "kind": "system", "content_text": "Alice created group \"Family\""}
+{"idx": 4, "ts": "2025-11-18T08:00:00Z", "sender": "Alice", "kind": "voice", "content_text": "", "status": "partial", "status_reason": {"code": "asr_partial", "message": "", "context": null}}

@@ -1,0 +1,6 @@
+7/8/25, 14:23 - Alice: Hello there
+This is a continuation line
+And another line with emoji 😊
+7/8/25, 14:24 - Bob: First line from Bob
+Still Bob talking: not a new header
+7/8/25, 14:25 - Carol: Final message

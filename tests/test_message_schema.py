@@ -9,9 +9,10 @@ Validates:
 """
 
 import pytest
+import jsonschema
 from pydantic import ValidationError
 
-from src.schema.message import Message, StatusReason
+from src.schema.message import Message, StatusReason, validate_message
 
 
 class TestStatusReason:
@@ -242,3 +243,14 @@ class TestMessageSchema:
         assert msg.media_filename == "PTT-20250708-WA0028.opus"
         assert msg.derived["asr_confidence"] == 0.92
         assert msg.status == "ok"
+
+    def test_schema_validation_happy_path(self):
+        """Validate message against JSON schema."""
+        msg = Message(idx=0, ts="2025-11-17T10:30:00Z", sender="Alice", kind="text")
+        validate_message(msg)  # Should not raise
+
+    def test_schema_validation_rejects_bad_kind(self):
+        """Schema validation should reject invalid kind values."""
+        msg = Message(idx=0, ts="2025-11-17T10:30:00Z", sender="Alice", kind="text")
+        with pytest.raises(ValidationError):
+            msg.kind = "invalid"  # type: ignore

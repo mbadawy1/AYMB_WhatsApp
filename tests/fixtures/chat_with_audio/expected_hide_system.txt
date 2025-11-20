@@ -1,0 +1,6 @@
+2025-01-01 00:00:00 - Alice: Hello world
+2025-01-01 00:00:01 - Bob: Hey there
+2025-01-01 00:00:02 - Alice: [IMAGE: IMG-1]
+2025-01-01 00:00:03 - Bob: multi
+    line
+2025-01-01 00:00:04 - Alice: [AUDIO TRANSCRIPTION FAILED]

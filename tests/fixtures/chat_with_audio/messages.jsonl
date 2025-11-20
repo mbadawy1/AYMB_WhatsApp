@@ -1,0 +1,7 @@
+{"idx": 0, "ts": "2025-01-01T00:00:00Z", "sender": "System", "kind": "system", "content_text": "Alice created this group"}
+{"idx": 1, "ts": "2025-01-01T00:00:00Z", "sender": "Alice", "kind": "text", "content_text": "Hello world"}
+{"idx": 2, "ts": "2025-01-01T00:00:01Z", "sender": "Bob", "kind": "voice", "content_text": "Hey there"}
+{"idx": 3, "ts": "2025-01-01T00:00:02Z", "sender": "Alice", "kind": "image", "media_hint": "IMG-1"}
+{"idx": 4, "ts": "2025-01-01T00:00:02Z", "sender": "Alice", "kind": "text", "content_text": "caption for image", "status": "skipped", "status_reason": {"code": "merged_into_previous_media", "message": "merged", "context": null}}
+{"idx": 5, "ts": "2025-01-01T00:00:03Z", "sender": "Bob", "kind": "text", "content_text": "multi\nline"}
+{"idx": 6, "ts": "2025-01-01T00:00:04Z", "sender": "Alice", "kind": "voice", "content_text": "", "status": "failed", "status_reason": {"code": "asr_failed", "message": "", "context": null}}

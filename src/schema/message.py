@@ -4,9 +4,26 @@ Canonical message representation with status tracking, media handling,
 and deterministic field semantics as defined in AGENTS.md M1.0.
 """
 
+import json
+from pathlib import Path
 from typing import Any, Literal, Optional
 
+import jsonschema
+
 from pydantic import BaseModel, ConfigDict, Field
+
+STATUS_REASON_CODES = {
+    "merged_into_previous_media",
+    "unresolved_media",
+    "ambiguous_media",
+    "ffmpeg_failed",
+    "timeout_ffmpeg",
+    "vad_no_speech",
+    "asr_failed",
+    "timeout_asr",
+    "asr_partial",
+    "audio_unsupported_format",
+}
 
 
 class StatusReason(BaseModel):
@@ -21,6 +38,12 @@ class StatusReason(BaseModel):
     code: str
     message: str
     context: Optional[dict[str, Any]] = None
+
+    @classmethod
+    def from_code(cls, code: str, message: Optional[str] = None, context: Optional[dict[str, Any]] = None) -> "StatusReason":
+        """Factory that normalizes known codes and optional human message."""
+        msg = message or code.replace("_", " ")
+        return cls(code=code, message=msg, context=context)
 
 
 class Message(BaseModel):
@@ -92,6 +115,13 @@ class Message(BaseModel):
         use_enum_values=True,  # Use enum values
     )
 
+    class Config:
+        """Compatibility for pydantic v1-style config."""
+
+        extra = "forbid"
+        validate_assignment = True
+        use_enum_values = True
+
     def mark_partial(
         self, code: str, message: str, context: Optional[dict[str, Any]] = None
     ) -> None:
@@ -139,3 +169,31 @@ class Message(BaseModel):
             error: Error message to append
         """
         self.errors.append(error)
+
+
+def _load_schema() -> dict[str, Any]:
+    """Load the JSON schema from disk."""
+    schema_path = Path(__file__).resolve().parent.parent.parent / "schema" / "message.schema.json"
+    with schema_path.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+_MESSAGE_SCHEMA = _load_schema()
+
+
+def validate_message(msg: Message) -> None:
+    """Validate a Message instance against the JSON schema.
+
+    Raises:
+        jsonschema.ValidationError: if validation fails.
+    """
+    if hasattr(msg, "model_dump"):
+        payload = msg.model_dump()
+    else:
+        payload = msg.dict()  # type: ignore[attr-defined]
+
+    # Strip pydantic metadata keys that are not part of the schema
+    payload.pop("model_config", None)
+    payload.pop("__pydantic_fields_set__", None)
+    payload.pop("__pydantic_private__", None)
+    jsonschema.validate(instance=payload, schema=_MESSAGE_SCHEMA)
