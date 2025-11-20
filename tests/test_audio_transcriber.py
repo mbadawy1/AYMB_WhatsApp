@@ -164,6 +164,21 @@ def test_asr_partial_status_when_chunk_errors(tmp_path, monkeypatch):
     assert msg.status == "partial"
     assert msg.status_reason.code == "asr_partial"
 
+def test_config_snapshot_paths_are_strings(tmp_path, monkeypatch):
+    wav_path = tmp_path / "speech.wav"
+    _make_wav(wav_path, seconds=1)
+
+    cfg = AudioConfig(cache_dir=tmp_path / "cache")
+    transcriber = AudioTranscriber(cfg)
+    monkeypatch.setattr(transcriber, "_to_wav", lambda m: wav_path)
+
+    msg = Message(idx=0, ts="2025-01-01T00:00:00", sender="Alice", kind="voice", media_filename=str(wav_path))
+    transcriber.transcribe(msg)
+
+    snapshot = msg.derived["asr"]["config_snapshot"]
+    assert isinstance(snapshot["cache_dir"], str)
+    assert snapshot["cache_dir"].endswith("cache")
+
 
 def test_cache_write_and_read_roundtrip(tmp_path, monkeypatch):
     wav_path = tmp_path / "speech.wav"

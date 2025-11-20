@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from src.schema.message import Message
+from src.writers.text_renderer import RtlMode, wrap_rtl_segments
 
 
 @dataclass
 class MarkdownOptions:
     hide_system: bool = False
+    rtl_mode: RtlMode = "none"
 
 
 def _ts_parts(ts: str) -> tuple[str, str]:
@@ -85,6 +87,8 @@ def render_messages_to_markdown(
 
             if msg.kind == "system":
                 body = msg.content_text or msg.raw_block or "[SYSTEM MESSAGE]"
+                # Apply RTL wrapping to system messages
+                body = wrap_rtl_segments(body, opts.rtl_mode)
                 f.write(f"- {msg_time} **SYSTEM:** {body}\n")
                 summary["system"] += 1
                 summary["total"] += 1
@@ -92,6 +96,8 @@ def render_messages_to_markdown(
 
             if msg.kind == "voice":
                 body = _body_text(msg)
+                # Apply RTL wrapping to voice transcript
+                body = wrap_rtl_segments(body, opts.rtl_mode)
                 f.write(f"- {msg_time} **{msg.sender} (voice):**\n")
                 badge = _voice_badge(msg)
                 if badge:

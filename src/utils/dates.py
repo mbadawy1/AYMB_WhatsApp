@@ -23,6 +23,11 @@ def _normalize_whitespace(text: str) -> str:
     return text
 
 
+def normalize_timestamp_text(text: str) -> str:
+    """Public helper to normalize timestamp-containing strings."""
+    return _normalize_whitespace(text)
+
+
 # Format candidates include both month-first (US) and day-first (intl) layouts.
 # Order matters: AM/PM variants checked first to avoid false positives.
 FORMAT_CANDIDATES = [

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Optional
@@ -9,12 +10,45 @@ from datetime import datetime
 
 from src.schema.message import Message
 
+# RTL mode type
+RtlMode = Literal["none", "bidi_marks"]
+
+# Bidi control characters
+RLE = "\u202B"  # Right-to-Left Embedding
+PDF = "\u202C"  # Pop Directional Formatting
+
 
 @dataclass
 class TextRenderOptions:
     hide_system: bool = False
     show_status: bool = False
     flatten_multiline: bool = False
+    rtl_mode: RtlMode = "none"
+
+
+def _has_arabic(text: str) -> bool:
+    """Check if text contains Arabic characters (U+0600 to U+06FF)."""
+    return bool(re.search(r'[\u0600-\u06FF]', text))
+
+
+def wrap_rtl_segments(text: str, rtl_mode: RtlMode) -> str:
+    """Wrap text with bidi marks if it contains Arabic and rtl_mode is enabled.
+
+    Args:
+        text: The text to potentially wrap
+        rtl_mode: The RTL mode setting
+
+    Returns:
+        Original text if rtl_mode="none" or no Arabic found,
+        otherwise text wrapped with RLE...PDF marks
+    """
+    if rtl_mode == "none":
+        return text
+
+    if rtl_mode == "bidi_marks" and _has_arabic(text):
+        return f"{RLE}{text}{PDF}"
+
+    return text
 
 
 def _ts_human(ts_iso: str) -> str:
@@ -86,6 +120,8 @@ def render_messages_to_txt(
                 if opts.hide_system:
                     continue
                 body = _select_body(msg)
+                # Apply RTL wrapping to system messages too
+                body = wrap_rtl_segments(body, opts.rtl_mode)
                 ts = _ts_human(msg.ts)
                 suffix = _status_suffix(msg, opts)
                 f.write(f"{ts} - SYSTEM: {body}{suffix}\n")
@@ -97,6 +133,8 @@ def render_messages_to_txt(
                 continue
 
             body = _select_body(msg)
+            # Apply RTL wrapping to the entire body
+            body = wrap_rtl_segments(body, opts.rtl_mode)
             lines = body.splitlines() or [""]
             ts = _ts_human(msg.ts)
             suffix = _status_suffix(msg, opts)

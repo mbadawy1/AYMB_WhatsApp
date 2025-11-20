@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from src.schema.message import Message, StatusReason
-from src.utils.dates import detect_datetime_format, parse_ts
+from src.utils.dates import detect_datetime_format, normalize_timestamp_text, parse_ts
 
 
 @dataclass
@@ -68,7 +68,7 @@ class ParserAgent:
         indicating it should be treated as a continuation of the previous block.
         """
         raw_line = line.rstrip("\n")
-        line_no_bom = raw_line.lstrip("\ufeff")
+        line_no_bom = normalize_timestamp_text(raw_line.lstrip("\ufeff"))
 
         regex = fmt.get("regex")
         if regex is None:

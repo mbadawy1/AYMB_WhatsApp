@@ -169,6 +169,7 @@ in `src/schema/message.py` (and mirror it into `schema/message.schema.json` and 
 - M6 runner and downstream tools **must** check `schema_version` and either:
   - Accept compatible versions (same MAJOR, ≥ MINOR they support), or  
   - Fail loudly with a clear “unsupported schema_version” error.
+- **JSON serialization rule:** When writing any JSON/JSONL artifact (messages, manifests, cache payloads, metrics), normalize non-primitive types (e.g., `pathlib.Path`) via `json.dumps(..., default=str)` or helper so Windows/Linux runs don’t crash on `WindowsPath` values.
 
 ## Milestones Overview
 
@@ -1810,7 +1811,7 @@ Add content-addressed cache so repeated runs don’t recompute ffmpeg/VAD/ASR, a
 
 * `_write_cache(key: str, payload: dict) -> None`
 
-* Cache file: `cfg.cache_dir / "audio" / f"{key}.json"`.
+* Cache file: `cfg.cache_dir / "audio" / f"{key}.json"`, where `cfg.cache_dir` is resolved per-run (runner passes `<run_dir>/cache/audio` so every run’s cache artifacts stay scoped to its `run_dir`).
 
 **Behavior**
 
@@ -1819,11 +1820,12 @@ Add content-addressed cache so repeated runs don’t recompute ffmpeg/VAD/ASR, a
   * final transcript, `status`, `status_reason`, `partial`
   * `derived["asr"]` including chunks, vad, provider/model/language, cost estimates
   * any human-readable placeholders used on failure
+  * **All fields must be JSON-serializable:** convert `Path` objects (and other custom types) to plain strings before writing the payload so Windows/Linux resolvers both succeed.
 * On cache hit:
   * short-circuit ffmpeg/VAD/ASR/chunking; apply cached transcript/status/derived to `Message`
   * keep deterministic ordering and default fields; do not mutate cached payload
 * On cache miss:
-  * run normal pipeline; before returning, write payload JSON atomically (tmp + rename) with UTF-8 and stable key order.
+  * run normal pipeline; before returning, write payload JSON atomically (tmp + rename) within the same cache directory so Windows doesn’t lose `*.tmp` files.
 * Cache directory is created if missing; avoid crashing if cache is unwritable—log and continue without cache.
 * Cost helpers (`utils/cost.py`) may be invoked to include estimated/actual cost fields in payload.
 

@@ -29,5 +29,5 @@ def write_messages_jsonl(messages: Iterable[Message], path: Path) -> None:
                 data = msg.model_dump()
             else:
                 data = msg.dict()
-            fh.write(json.dumps(data, ensure_ascii=False))
+            fh.write(json.dumps(data, ensure_ascii=False, default=str))
             fh.write("\n")

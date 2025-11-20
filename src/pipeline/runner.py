@@ -269,6 +269,7 @@ def _run_m3(cfg: PipelineConfig, manifest: RunManifest, messages_m2: List[Messag
             asr_model=cfg.asr_model,
             asr_language=cfg.asr_language,
             asr_api_version=cfg.asr_api_version,
+            cache_dir=cfg.run_dir / "cache" / "audio",
         )
         transcriber = AudioTranscriber(audio_cfg)
 

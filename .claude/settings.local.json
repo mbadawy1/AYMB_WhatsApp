@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(black --check:*)",
+      "Bash(ruff check:*)",
+      "Bash(black:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(find:*)",
+      "Bash(pytest:*)",
+      "mcp__chrome-devtools__click",
+      "Bash(unset GITHUB_TOKEN)",
+      "Bash(gh auth login:*)",
+      "Bash(git config:*)",
+      "Bash(GIT_TERMINAL_PROMPT=1 git push:*)",
+      "Bash(git push:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

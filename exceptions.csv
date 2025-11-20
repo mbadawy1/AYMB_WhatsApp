@@ -1,0 +1,4 @@
+idx,ts,sender,kind,media_hint,reason,top1_path,top1_score,top2_path,top2_score
+0,2025-07-08T14:23:00,Alice,text,,unresolved_media,,,,
+1,2025-07-08T14:24:00,Bob,text,,unresolved_media,,,,
+2,2025-07-08T14:25:00,Alice,text,,unresolved_media,,,,

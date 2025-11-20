@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from src.utils.asr import AsrClient, map_asr_error_to_status_reason
 from src.utils.cost import estimate_asr_cost
@@ -22,6 +22,21 @@ from src.schema.message import Message, StatusReason
 class ChunkingError(Exception):
     """Raised when audio chunking fails due to invalid or degenerate audio."""
     pass
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively convert Path objects to strings for JSON serialization."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, set):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 @dataclass
@@ -46,6 +61,11 @@ class AudioConfig:
     asr_billing_plan: str = "per_minute"
     chunk_dir: Optional[Path] = None
 
+    def __post_init__(self) -> None:
+        self.cache_dir = Path(self.cache_dir).resolve()
+        if self.chunk_dir is not None:
+            self.chunk_dir = Path(self.chunk_dir).resolve()
+
 
 class AudioTranscriber:
     """Transcribe WhatsApp voice messages."""
@@ -60,11 +80,11 @@ class AudioTranscriber:
         """Populate derived ASR metadata for voice messages."""
         if m.kind != "voice":
             return
-        asr_info = m.derived.get("asr") or {}
+        asr_info = dict(m.derived.get("asr") or {})
         asr_info.update(
             {
                 "pipeline_version": self.pipeline_version,
-                "config_snapshot": asdict(self.cfg),
+                "config_snapshot": _json_safe(asdict(self.cfg)),
             }
         )
         if hasattr(self, "asr_client"):
@@ -429,8 +449,15 @@ class AudioTranscriber:
             "status": m.status,
             "status_reason": m.status_reason.code if m.status_reason else None,
             "partial": m.partial,
-            "derived_asr": m.derived.get("asr", {}),
+            "derived_asr": _json_safe(m.derived.get("asr", {})),
         }
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-        shutil.move(tmp, path)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(path.parent),
+            suffix=".tmp",
+        ) as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+            tmp_path = Path(fh.name)
+        shutil.move(tmp_path, path)

@@ -314,6 +314,16 @@ class TestHeaderSplit:
         assert sender == "Bob"
         assert body == "Marley: Jamming"
 
+    def test_header_split_handles_narrow_nbsp(self, parser):
+        """Headers with narrow no-break space between time and AM/PM should parse."""
+        lines = ["7/7/25, 1:37\u202fPM - Alice: Hello"]
+        fmt = detect_datetime_format(lines)
+        ts, sender, body = parser._split_header(lines[0], fmt)
+
+        assert ts == "7/7/25, 1:37 PM"
+        assert sender == "Alice"
+        assert body == "Hello"
+
     def test_header_split_non_header_continuation(self, parser, header_lines):
         """Lines without a leading timestamp should be treated as continuations."""
         fmt = detect_datetime_format(header_lines)
