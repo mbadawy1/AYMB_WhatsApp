@@ -15,6 +15,10 @@
 5. **Status discipline:** every unit that can fail must set `status`, `status_reason`, and `partial` appropriately.
 6. **Docs:** Each PR updates or creates a minimal README snippet for its area when behavior changes.
 
+### Updates from latest change
+
+- Google STT v2 (Chirp) must use a regional endpoint (defaults to `us-central1` via `GOOGLE_CLOUD_LOCATION`) and the recognizer path must use the same location.
+
 ---
 
 ## Source Layout (canonical)
