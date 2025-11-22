@@ -12,6 +12,7 @@ from typing import Any, Dict, Literal, Optional, Protocol
 
 import yaml
 
+
 from src.schema.message import StatusReason
 
 logger = logging.getLogger(__name__)
@@ -455,22 +456,49 @@ class GoogleSttBackend:
 
     def __init__(self, config: AsrProviderConfig) -> None:
         self.config = config
-        self._client = None
+        self._client_v1 = None
+        self._client_v2 = None
         self._project_id: Optional[str] = None
         self._project_id_checked = False
 
-    def _get_client(self):
-        """Lazy-load Google Speech client."""
-        if self._client is None:
+    def _get_client_v1(self):
+        """Lazy-load Google Speech v1 client."""
+        if self._client_v1 is None:
             try:
                 from google.cloud import speech
-                self._client = speech.SpeechClient()
+
+                self._client_v1 = speech.SpeechClient()
             except ImportError:
                 raise AsrConfigError(
                     "google-cloud-speech package not installed. "
                     "Run: pip install google-cloud-speech"
                 )
-        return self._client
+        return self._client_v1
+
+    def _get_client_v2(self):
+        """Lazy-load Google Speech v2 client using a regional endpoint.
+
+        Chirp models are only available on regional endpoints (e.g., us-central1),
+        so we honor GOOGLE_CLOUD_LOCATION (defaulting to us-central1) when building
+        the client to avoid 400/404 errors.
+        """
+        if self._client_v2 is None:
+            try:
+                from google.api_core.client_options import ClientOptions
+                from google.cloud import speech_v2
+
+                location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+                self._client_v2 = speech_v2.SpeechClient(
+                    client_options=ClientOptions(
+                        api_endpoint=f"{location}-speech.googleapis.com"
+                    )
+                )
+            except ImportError:
+                raise AsrConfigError(
+                    "google-cloud-speech>=2.26.0 package with v2 support not installed. "
+                    "Run: pip install 'google-cloud-speech>=2.26.0'"
+                )
+        return self._client_v2
 
     def _get_language_code(self) -> str:
         """Convert language hint to BCP-47 format for Google STT."""
@@ -506,15 +534,30 @@ class GoogleSttBackend:
         """Return model identifier suited for the configured API version."""
         api_version = (self.config.api_version or "v1").lower()
         if api_version.startswith("v2"):
-            project_id = self._resolve_project_id()
-            if not project_id:
-                raise AsrConfigError(
-                    "Google STT v2 requires a project id. Set GOOGLE_CLOUD_PROJECT or ensure "
-                    "the service account JSON includes 'project_id'."
-                )
-            location = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
-            return f"projects/{project_id}/locations/{location}/models/{short_model}"
+            # v2 uses plain model ids (e.g., "chirp") on RecognitionConfig
+            return short_model
         return short_model
+
+    def _build_recognizer_path(self) -> str:
+        """Build the v2 recognizer resource path (uses default recognizer)."""
+        project_id = self._resolve_project_id()
+        if not project_id:
+            raise AsrConfigError(
+                "Google STT v2 requires a project id. Set GOOGLE_CLOUD_PROJECT or ensure "
+                "the service account JSON includes 'project_id'."
+            )
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        return f"projects/{project_id}/locations/{location}/recognizers/_"
+
+    def _map_model(self) -> str:
+        """Normalize configured model name to Google's expected identifier."""
+        model_map = {
+            "chirp-3": "chirp",
+            "chirp-2": "chirp_2",
+            "chirp-1": "chirp",
+            "google-default": "default",
+        }
+        return model_map.get(self.config.model, self.config.model)
 
     def transcribe_chunk(self, wav_path: Path, start_sec: float, end_sec: float) -> AsrChunkResult:
         duration = max(0.0, end_sec - start_sec)
@@ -524,53 +567,67 @@ class GoogleSttBackend:
             "api_version": self.config.api_version or "v1",
         }
 
+        model_id = self._build_model_identifier(self._map_model())
+
         for attempt in range(self.config.max_retries):
             try:
-                from google.cloud import speech
-
-                client = self._get_client()
+                api_version = (self.config.api_version or "v1").lower()
 
                 # Read audio file content
                 with open(wav_path, "rb") as audio_file:
                     content = audio_file.read()
 
-                audio = speech.RecognitionAudio(content=content)
-
-                # Build recognition config per Google docs
                 language_code = self._get_language_code()
 
-                # Map model names to Google's model identifiers
-                # For V1 API: use model parameter in RecognitionConfig
-                model_map = {
-                    "chirp-3": "chirp",  # Chirp is the latest in V1
-                    "chirp-2": "chirp_2",
-                    "chirp-1": "chirp",
-                    "google-default": "default",
-                }
-                short_model = model_map.get(self.config.model, "default")
-                google_model = self._build_model_identifier(short_model)
+                if api_version.startswith("v2"):
+                    from google.cloud import speech_v2
 
-                config = speech.RecognitionConfig(
-                    encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                    sample_rate_hertz=16000,
-                    language_code=language_code,
-                    enable_automatic_punctuation=True,
-                    model=google_model,
-                )
+                    client = self._get_client_v2()
+                    recognizer = self._build_recognizer_path()
 
-                # Perform synchronous recognition
-                response = client.recognize(
-                    config=config,
-                    audio=audio,
-                    timeout=self.config.timeout_seconds,
-                )
+                    config = speech_v2.RecognitionConfig(
+                        auto_decoding_config=speech_v2.AutoDetectDecodingConfig(),
+                        language_codes=[language_code],
+                        model=model_id,
+                        features=speech_v2.RecognitionFeatures(
+                            enable_automatic_punctuation=True
+                        ),
+                    )
+
+                    request = speech_v2.RecognizeRequest(
+                        recognizer=recognizer,
+                        config=config,
+                        content=content,
+                    )
+
+                    response = client.recognize(
+                        request=request,
+                        timeout=self.config.timeout_seconds,
+                    )
+                else:
+                    from google.cloud import speech
+
+                    client = self._get_client_v1()
+                    audio = speech.RecognitionAudio(content=content)
+
+                    config = speech.RecognitionConfig(
+                        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                        sample_rate_hertz=16000,
+                        language_code=language_code,
+                        enable_automatic_punctuation=True,
+                        model=model_id,
+                    )
+
+                    response = client.recognize(
+                        config=config,
+                        audio=audio,
+                        timeout=self.config.timeout_seconds,
+                    )
 
                 # Extract transcript from response
-                # Each result is for a consecutive portion of the audio
                 transcript_parts = []
                 for result in response.results:
                     if result.alternatives:
-                        # The first alternative is the most likely one
                         transcript_parts.append(result.alternatives[0].transcript)
 
                 transcript = " ".join(transcript_parts)
