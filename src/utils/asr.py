@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -119,8 +120,8 @@ def _default_asr_config() -> dict[str, Any]:
         "providers": {
             "whisper_openai": {
                 "backend": "whisper_stub",
-                "model": "whisper-1",
-                "available_models": ["whisper-1", "whisper-large-v3"],
+                "model": "gpt-4o-transcribe",
+                "available_models": ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe-diarize", "whisper-1"],
                 "timeout_seconds": 30,
                 "max_retries": 2,
                 "billing": "openai_whisper_v1",
@@ -146,7 +147,7 @@ def _load_asr_config() -> dict[str, Any]:
     return _default_asr_config()
 
 
-def _select_backend(provider_name: str, env_key: Optional[str]) -> str:
+def _select_backend(provider_name: str, env_key: Optional[str], default_backend: str) -> str:
     """Auto-select real backend if API key available, else stub.
 
     Args:
@@ -181,9 +182,9 @@ def _select_backend(provider_name: str, env_key: Optional[str]) -> str:
         else:
             logger.info(f"ASR: Using backend '{backend}' for '{provider_name}'")
     else:
-        # Fallback to provider name as backend
-        backend = provider_name
-        logger.info(f"ASR: Using default backend '{backend}'")
+        # Fallback to backend provided in config (or provider name)
+        backend = default_backend
+        logger.info(f"ASR: Using default backend '{backend}' for '{provider_name}'")
 
     return backend
 
@@ -204,7 +205,7 @@ def resolve_asr_provider_config(
         raise AsrConfigError(f"Unknown ASR provider '{provider_name}'")
 
     provider_cfg = providers[name] or {}
-    backend = provider_cfg.get("backend") or name
+    default_backend = provider_cfg.get("backend") or name
 
     model = model_override or provider_cfg.get("model")
     if not model:
@@ -214,7 +215,8 @@ def resolve_asr_provider_config(
     env_key = provider_cfg.get("env_key")
     require_env = bool(provider_cfg.get("require_env"))
     if require_env and env_key and not os.getenv(env_key):
-        raise AsrConfigError("Provider '{name}' requires environment variable '{env_key}'")
+        raise AsrConfigError(f"Provider '{name}' requires environment variable '{env_key}'")
+    backend = _select_backend(name, env_key, default_backend)
 
     api_versions = provider_cfg.get("api_versions") or []
     default_api_version = provider_cfg.get("default_api_version") or (api_versions[0] if api_versions else None)
@@ -320,6 +322,18 @@ class WhisperOpenAIBackend:
                 raise AsrConfigError("openai package not installed. Run: pip install openai")
         return self._client
 
+    def _get_response_format(self) -> str:
+        """Choose response format based on model capabilities.
+
+        Returns:
+            "verbose_json" for whisper-1 (provides language detection)
+            "json" for gpt-4o models (only format they support)
+        """
+        if self.config.model == "whisper-1":
+            return "verbose_json"
+        else:
+            return "json"
+
     def transcribe_chunk(self, wav_path: Path, start_sec: float, end_sec: float) -> AsrChunkResult:
         duration = max(0.0, end_sec - start_sec)
         meta = {"provider": self.config.name, "model": self.config.model}
@@ -329,13 +343,16 @@ class WhisperOpenAIBackend:
                 client = self._get_client()
 
                 with open(wav_path, "rb") as audio_file:
-                    # Use verbose_json to get language detection info
+                    # Choose response format based on model capabilities
+                    # whisper-1 supports verbose_json, gpt-4o models only support json/text
                     # Language parameter uses ISO-639-1 codes (e.g., "en", "ar", "es")
+                    response_format = self._get_response_format()
+
                     if self.config.language and self.config.language != "auto":
                         response = client.audio.transcriptions.create(
                             model=self.config.model,
                             file=audio_file,
-                            response_format="verbose_json",
+                            response_format=response_format,
                             language=self.config.language,
                             timeout=self.config.timeout_seconds,
                         )
@@ -344,7 +361,7 @@ class WhisperOpenAIBackend:
                         response = client.audio.transcriptions.create(
                             model=self.config.model,
                             file=audio_file,
-                            response_format="verbose_json",
+                            response_format=response_format,
                             timeout=self.config.timeout_seconds,
                         )
 
@@ -439,6 +456,8 @@ class GoogleSttBackend:
     def __init__(self, config: AsrProviderConfig) -> None:
         self.config = config
         self._client = None
+        self._project_id: Optional[str] = None
+        self._project_id_checked = False
 
     def _get_client(self):
         """Lazy-load Google Speech client."""
@@ -463,6 +482,39 @@ class GoogleSttBackend:
 
         # Map ISO-639-1 to BCP-47
         return self.LANGUAGE_CODE_MAP.get(lang, f"{lang}-US" if len(lang) == 2 else "en-US")
+
+    def _resolve_project_id(self) -> Optional[str]:
+        """Best-effort project_id lookup for Google STT."""
+        if self._project_id_checked:
+            return self._project_id
+
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT")
+        if not project_id:
+            creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            if creds_path:
+                try:
+                    data = json.loads(Path(creds_path).read_text(encoding="utf-8"))
+                    project_id = data.get("project_id") or data.get("projectId")
+                except (OSError, json.JSONDecodeError):
+                    project_id = None
+
+        self._project_id = project_id
+        self._project_id_checked = True
+        return project_id
+
+    def _build_model_identifier(self, short_model: str) -> str:
+        """Return model identifier suited for the configured API version."""
+        api_version = (self.config.api_version or "v1").lower()
+        if api_version.startswith("v2"):
+            project_id = self._resolve_project_id()
+            if not project_id:
+                raise AsrConfigError(
+                    "Google STT v2 requires a project id. Set GOOGLE_CLOUD_PROJECT or ensure "
+                    "the service account JSON includes 'project_id'."
+                )
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+            return f"projects/{project_id}/locations/{location}/models/{short_model}"
+        return short_model
 
     def transcribe_chunk(self, wav_path: Path, start_sec: float, end_sec: float) -> AsrChunkResult:
         duration = max(0.0, end_sec - start_sec)
@@ -495,7 +547,8 @@ class GoogleSttBackend:
                     "chirp-1": "chirp",
                     "google-default": "default",
                 }
-                google_model = model_map.get(self.config.model, "default")
+                short_model = model_map.get(self.config.model, "default")
+                google_model = self._build_model_identifier(short_model)
 
                 config = speech.RecognitionConfig(
                     encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,

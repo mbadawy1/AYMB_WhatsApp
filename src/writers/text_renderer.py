@@ -83,9 +83,16 @@ def _select_body(msg: Message) -> str:
         return msg.caption
 
     if msg.kind == "voice":
+        label = ""
+        if msg.media_filename:
+            label = f"[{Path(msg.media_filename).name}] "
+        elif msg.media_hint:
+            label = f"[{msg.media_hint}] "
+        if msg.content_text:
+            return f"{label}{msg.content_text}"
         if msg.status == "failed":
-            return "[AUDIO TRANSCRIPTION FAILED]"
-        return "[UNTRANSCRIBED VOICE NOTE]"
+            return f"{label}[AUDIO TRANSCRIPTION FAILED]"
+        return f"{label}[UNTRANSCRIBED VOICE NOTE]"
     if msg.kind == "image":
         return f"[IMAGE: {msg.media_hint or 'unknown'}]"
     if msg.kind == "video":

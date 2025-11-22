@@ -14,7 +14,19 @@
       "Bash(gh auth login:*)",
       "Bash(git config:*)",
       "Bash(GIT_TERMINAL_PROMPT=1 git push:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python3:*)",
+      "mcp__context7__get-library-docs",
+      "Bash(jq:*)",
+      "Bash(tee:*)",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_press_key",
+      "mcp__playwright__browser_type",
+      "Bash(export OPENAI_API_KEY:*)",
+      "Bash(export GOOGLE_APPLICATION_CREDENTIALS='/mnt/c/Users/Dell/Documents/Mohamed/AYMB/phonic-goods-472917-r3-0735767058a2.json')",
+      "mcp__playwright__browser_snapshot"
     ],
     "deny": [],
     "ask": []

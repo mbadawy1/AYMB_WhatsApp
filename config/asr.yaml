@@ -7,10 +7,12 @@ default_provider: whisper_openai
 providers:
   whisper_openai:
     backend: whisper_stub
-    model: whisper-1
+    model: gpt-4o-transcribe
     available_models:
+      - gpt-4o-transcribe
+      - gpt-4o-mini-transcribe
+      - gpt-4o-transcribe-diarize
       - whisper-1
-      - whisper-large-v3
     timeout_seconds: 30
     max_retries: 2
     billing: openai_whisper_v1
